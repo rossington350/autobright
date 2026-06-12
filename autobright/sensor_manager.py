@@ -2,6 +2,8 @@ import traceback
 
 YAPI = None
 YLightSensor = None
+YLed = None
+YColorLed = None
 YRefParam = None
 YAPI_SUCCESS = None
 YoctoImportError = None
@@ -9,21 +11,31 @@ YoctoImportError = None
 try:
     import yocto_api as _yocto_api
     import yocto_lightsensor as _yocto_ls
+    import yocto_led as _yocto_led
+    import yocto_colorled as _yocto_colorled
     YAPI = _yocto_api.YAPI
     YLightSensor = _yocto_ls.YLightSensor
+    YLed = _yocto_led.YLed
+    YColorLed = _yocto_colorled.YColorLed
     YRefParam = getattr(_yocto_api, 'YRefParam', None)
     YAPI_SUCCESS = getattr(_yocto_api, 'YAPI_SUCCESS', getattr(YAPI, 'SUCCESS', None))
 except Exception:
     try:
         import yoctopuce.yocto_api as _yocto_api
         import yoctopuce.yocto_lightsensor as _yocto_ls
+        import yoctopuce.yocto_led as _yocto_led
+        import yoctopuce.yocto_colorled as _yocto_colorled
         YAPI = _yocto_api.YAPI
         YLightSensor = _yocto_ls.YLightSensor
+        YLed = _yocto_led.YLed
+        YColorLed = _yocto_colorled.YColorLed
         YRefParam = getattr(_yocto_api, 'YRefParam', None)
         YAPI_SUCCESS = getattr(_yocto_api, 'YAPI_SUCCESS', getattr(YAPI, 'SUCCESS', None))
     except Exception as exc:
         YAPI = None
         YLightSensor = None
+        YLed = None
+        YColorLed = None
         YRefParam = None
         YoctoImportError = exc
 
@@ -83,6 +95,42 @@ class YoctoSensorManager:
             self.last_error = f'UpdateDeviceList failed: {exc}'
             return False
 
+    def _disable_yocto_leds(self):
+        if YLed is not None:
+            try:
+                led = YLed.FirstLed()
+                while led is not None:
+                    try:
+                        if hasattr(led, 'set_power') and hasattr(YLed, 'POWER_OFF'):
+                            led.set_power(YLed.POWER_OFF)
+                        elif hasattr(led, 'set_luminosity'):
+                            led.set_luminosity(0)
+                    except Exception:
+                        pass
+                    try:
+                        led = led.nextLed()
+                    except Exception:
+                        break
+            except Exception:
+                pass
+        if YColorLed is not None:
+            try:
+                color_led = YColorLed.FirstColorLed()
+                while color_led is not None:
+                    try:
+                        if hasattr(color_led, 'set_rgbColor'):
+                            color_led.set_rgbColor(0)
+                        elif hasattr(color_led, 'set_hslColor'):
+                            color_led.set_hslColor(0)
+                    except Exception:
+                        pass
+                    try:
+                        color_led = color_led.nextColorLed()
+                    except Exception:
+                        break
+            except Exception:
+                pass
+
     def find_sensor(self):
         if not self._api_ready and not self._register_hub():
             return False
@@ -103,11 +151,30 @@ class YoctoSensorManager:
                 self.sensor.set_reportFrequency('60/m')
             except Exception:
                 pass
-        if hasattr(self.sensor, 'get_module') and hasattr(self.sensor.get_module(), 'saveToFlash'):
+
+        if hasattr(self.sensor, 'get_module'):
             try:
-                self.sensor.get_module().saveToFlash()
+                module = self.sensor.get_module()
+                if module is not None:
+                    if hasattr(module, 'set_luminosity'):
+                        try:
+                            module.set_luminosity(0)
+                        except Exception:
+                            pass
+                    if hasattr(module, 'set_beacon') and hasattr(module, 'BEACON_OFF'):
+                        try:
+                            module.set_beacon(module.BEACON_OFF)
+                        except Exception:
+                            pass
+                    if hasattr(module, 'saveToFlash'):
+                        try:
+                            module.saveToFlash()
+                        except Exception:
+                            pass
             except Exception:
                 pass
+
+        self._disable_yocto_leds()
         self.last_error = ''
         return True
 
