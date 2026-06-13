@@ -19,6 +19,18 @@ def build_parser():
         default=None,
         help='Update interval in seconds (alias: --interval)',
     )
+    parser.add_argument(
+        '--max-brightness-rate',
+        type=float,
+        default=None,
+        help='Maximum brightness change rate in percent per second (0 disables rate limiting)',
+    )
+    parser.add_argument(
+        '--lux-hysteresis',
+        type=float,
+        default=None,
+        help='Minimum lux change required before the target brightness is recomputed (0 disables hysteresis)',
+    )
     parser.add_argument('--show-lux', action='store_true', default=None, help='Display current lux value in the GUI')
     parser.add_argument('--minimize-to-tray', action='store_true', default=None, help='Minimize the app to the notification area on close')
     parser.add_argument('--start-minimized', action='store_true', default=None, help='Start the app minimized to the notification area')

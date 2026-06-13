@@ -23,6 +23,11 @@ class BrightnessDimmerApp:
     DEFAULT_MIN_BRIGHTNESS = 20
     DEFAULT_MAX_BRIGHTNESS = 100
     DEFAULT_REFRESH_S = 1.0
+    # Smoothing defaults. Max change rate is in brightness-percent per second
+    # (0 disables rate limiting). Lux hysteresis is the minimum change in lux
+    # required before the target brightness is recomputed (0 disables it).
+    DEFAULT_MAX_BRIGHTNESS_RATE = 25.0
+    DEFAULT_LUX_HYSTERESIS = 10.0
     RETAIN_MONITOR_TIMEOUT = 10.0
     # Number of consecutive successful enumeration cycles required before we
     # publish the monitor list, so a stale first read on startup is skipped.
@@ -53,6 +58,10 @@ class BrightnessDimmerApp:
         self.min_brightness = args.min_brightness if args.min_brightness is not None else self.settings.get('min_brightness', self.DEFAULT_MIN_BRIGHTNESS)
         self.max_brightness = args.max_brightness if args.max_brightness is not None else self.settings.get('max_brightness', self.DEFAULT_MAX_BRIGHTNESS)
         self.interval = args.interval if args.interval is not None else self.settings.get('interval', self.DEFAULT_REFRESH_S)
+        arg_max_brightness_rate = getattr(args, 'max_brightness_rate', None)
+        self.max_brightness_rate = arg_max_brightness_rate if arg_max_brightness_rate is not None else self.settings.get('max_brightness_rate', self.DEFAULT_MAX_BRIGHTNESS_RATE)
+        arg_lux_hysteresis = getattr(args, 'lux_hysteresis', None)
+        self.lux_hysteresis = arg_lux_hysteresis if arg_lux_hysteresis is not None else self.settings.get('lux_hysteresis', self.DEFAULT_LUX_HYSTERESIS)
         self.show_lux = args.show_lux if args.show_lux is not None else self.settings.get('show_lux', False)
         self.minimize_to_tray = args.minimize_to_tray if args.minimize_to_tray is not None else self.settings.get('minimize_to_tray', False)
         self.start_minimized = args.start_minimized if args.start_minimized is not None else self.settings.get('start_minimized', False)
@@ -64,6 +73,14 @@ class BrightnessDimmerApp:
             self.max_brightness = min(100, self.min_brightness + 1)
         if self.interval <= 0:
             self.interval = self.DEFAULT_REFRESH_S
+        if self.max_brightness_rate < 0:
+            self.max_brightness_rate = 0.0
+        if self.lux_hysteresis < 0:
+            self.lux_hysteresis = 0.0
+
+        # Smoothing state, mutated only by the worker thread.
+        self._smoothed_brightness = None
+        self._effective_lux = None
 
         self.root = tk.Tk()
         self.root.title('Brightness Dimmer')
@@ -112,6 +129,8 @@ class BrightnessDimmerApp:
                         'min_brightness': self.min_brightness,
                         'max_brightness': self.max_brightness,
                         'interval': self.interval,
+                        'max_brightness_rate': self.max_brightness_rate,
+                        'lux_hysteresis': self.lux_hysteresis,
                         'show_lux': self.show_lux,
                         'minimize_to_tray': self.minimize_to_tray,
                         'start_minimized': self.start_minimized,
@@ -196,23 +215,33 @@ class BrightnessDimmerApp:
         self.interval_entry = ttk.Entry(frame, textvariable=self.interval_var, width=12)
         self.interval_entry.grid(row=4, column=1, sticky='w')
 
+        ttk.Label(frame, text='Max change rate (%/s):').grid(row=5, column=0, sticky='w')
+        self.max_brightness_rate_var = tk.StringVar(value=str(self.max_brightness_rate))
+        self.max_brightness_rate_entry = ttk.Entry(frame, textvariable=self.max_brightness_rate_var, width=12)
+        self.max_brightness_rate_entry.grid(row=5, column=1, sticky='w')
+
+        ttk.Label(frame, text='Lux hysteresis:').grid(row=6, column=0, sticky='w')
+        self.lux_hysteresis_var = tk.StringVar(value=str(self.lux_hysteresis))
+        self.lux_hysteresis_entry = ttk.Entry(frame, textvariable=self.lux_hysteresis_var, width=12)
+        self.lux_hysteresis_entry.grid(row=6, column=1, sticky='w')
+
         self.tray_var = tk.BooleanVar(value=self.minimize_to_tray)
-        ttk.Checkbutton(frame, text='Minimize to tray on close', variable=self.tray_var).grid(row=5, column=0, columnspan=2, sticky='w')
+        ttk.Checkbutton(frame, text='Minimize to tray on close', variable=self.tray_var).grid(row=7, column=0, columnspan=2, sticky='w')
         # manual apply button (kept for convenience)
-        ttk.Button(frame, text='Apply', command=self._apply_parameters).grid(row=6, column=0, columnspan=2, pady=(8, 10), sticky='ew')
+        ttk.Button(frame, text='Apply', command=self._apply_parameters).grid(row=8, column=0, columnspan=2, pady=(8, 10), sticky='ew')
 
         self.lux_label = ttk.Label(frame, text='Current lux: ?')
-        self.lux_label.grid(row=7, column=0, columnspan=2, sticky='w')
+        self.lux_label.grid(row=9, column=0, columnspan=2, sticky='w')
 
         self.target_label = ttk.Label(frame, text='Target brightness: ?')
-        self.target_label.grid(row=8, column=0, columnspan=2, sticky='w')
+        self.target_label.grid(row=10, column=0, columnspan=2, sticky='w')
 
         # Use the existing monitor listbox to show status messages and monitor info
         self.monitor_listbox = tk.Listbox(frame, width=60, height=8)
-        self.monitor_listbox.grid(row=9, column=0, columnspan=2, pady=(8, 0), sticky='ew')
+        self.monitor_listbox.grid(row=11, column=0, columnspan=2, pady=(8, 0), sticky='ew')
 
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=11, column=0, columnspan=2, sticky='ew', pady=(8, 0))
+        button_frame.grid(row=12, column=0, columnspan=2, sticky='ew', pady=(8, 0))
         ttk.Button(button_frame, text='Refresh monitors', command=self._refresh_monitors).pack(side='left')
         ttk.Button(button_frame, text='Reconnect sensor', command=self._reconnect_sensor).pack(side='left', padx=(8, 0))
         ttk.Button(button_frame, text='Hide to tray', command=self._hide_to_tray).pack(side='left', padx=(8, 0))
@@ -227,10 +256,12 @@ class BrightnessDimmerApp:
             min_brightness = int(self.min_brightness_var.get())
             max_brightness = int(self.max_brightness_var.get())
             interval = float(self.interval_var.get())
+            max_brightness_rate = float(self.max_brightness_rate_var.get())
+            lux_hysteresis = float(self.lux_hysteresis_var.get())
         except ValueError:
             messagebox.showerror(
                 'Input error',
-                'Please enter valid numeric values for min/max lux, brightness, and update rate.',
+                'Please enter valid numeric values for min/max lux, brightness, update rate, change rate, and hysteresis.',
             )
             return
 
@@ -246,12 +277,20 @@ class BrightnessDimmerApp:
         if interval <= 0:
             messagebox.showerror('Input error', 'Update rate must be greater than zero.')
             return
+        if max_brightness_rate < 0:
+            messagebox.showerror('Input error', 'Max change rate cannot be negative (use 0 to disable smoothing).')
+            return
+        if lux_hysteresis < 0:
+            messagebox.showerror('Input error', 'Lux hysteresis cannot be negative (use 0 to disable it).')
+            return
 
         self.min_lux = min_lux
         self.max_lux = max_lux
         self.min_brightness = min_brightness
         self.max_brightness = max_brightness
         self.interval = interval
+        self.max_brightness_rate = max_brightness_rate
+        self.lux_hysteresis = lux_hysteresis
         self.minimize_to_tray = self.tray_var.get()
         self._save_settings()
         self._update_status('Parameters updated.')
@@ -285,6 +324,39 @@ class BrightnessDimmerApp:
         result = self.min_brightness + (lux_value - self.min_lux) * span_brightness / span_lux
         return max(self.min_brightness, min(self.max_brightness, int(round(result))))
 
+    def _apply_lux_hysteresis(self, lux_value):
+        """Return the lux value to drive brightness from, ignoring small fluctuations.
+
+        Only commits a new reading once it differs from the last committed value
+        by at least ``lux_hysteresis``; otherwise the previous value is reused.
+        """
+        if lux_value is None:
+            return self._effective_lux
+        if self._effective_lux is None or self.lux_hysteresis <= 0:
+            self._effective_lux = lux_value
+        elif abs(lux_value - self._effective_lux) >= self.lux_hysteresis:
+            self._effective_lux = lux_value
+        return self._effective_lux
+
+    def _smooth_brightness(self, target):
+        """Ramp the applied brightness toward ``target`` at the configured rate.
+
+        Limits the change to ``max_brightness_rate`` percent per ``interval``;
+        a rate of 0 applies the target immediately.
+        """
+        if target is None:
+            return None
+        if self._smoothed_brightness is None or self.max_brightness_rate <= 0:
+            self._smoothed_brightness = float(target)
+            return int(round(self._smoothed_brightness))
+        max_step = self.max_brightness_rate * self.interval
+        delta = target - self._smoothed_brightness
+        if abs(delta) <= max_step:
+            self._smoothed_brightness = float(target)
+        else:
+            self._smoothed_brightness += max_step if delta > 0 else -max_step
+        return int(round(self._smoothed_brightness))
+
     def _percent_to_monitor_value(self, monitor, brightness_percent):
         if brightness_percent is None:
             return None
@@ -307,7 +379,8 @@ class BrightnessDimmerApp:
             try:
                 self.sensor_manager.tick()
                 lux = self.sensor_manager.get_lux()
-                target = self._compute_brightness(lux)
+                effective_lux = self._apply_lux_hysteresis(lux)
+                raw_target = self._compute_brightness(effective_lux)
                 monitors = self.monitor_manager.enumerate_monitors()
                 if not monitors:
                     self.monitor_failure_count += 1
@@ -324,22 +397,26 @@ class BrightnessDimmerApp:
                         timeout_left = int(self.RETAIN_MONITOR_TIMEOUT - (time.time() - self.last_good_monitors_time))
                         if timeout_left < 0:
                             timeout_left = 0
-                        target_text = f' Target brightness would be {target}%' if target is not None else ''
+                        target_text = f' Target brightness would be {raw_target}%' if raw_target is not None else ''
                         updates['monitor_status'] = (
                             f'Temporary monitor loss detected. Retaining last known monitor list for {timeout_left}s while retrying...'
                             + target_text
                         )
                     else:
-                        target_text = f' Target brightness would be {target}%' if target is not None else ''
+                        target_text = f' Target brightness would be {raw_target}%' if raw_target is not None else ''
                         updates['monitor_status'] = (
                             f'No compatible monitors found. Ensure your monitor supports Windows DDC/CI brightness control. Waiting for reconnect...{target_text}'
                         )
                         updates['monitor_list'] = []
+                    # No monitors are being driven, so leave the smoothing state
+                    # untouched; ramping resumes from the last applied value.
+                    updates['target_brightness'] = raw_target
                 else:
                     self.monitor_success_count += 1
                     self.monitor_failure_count = 0
                     self.last_good_monitors = monitors
                     self.last_good_monitors_time = time.time()
+                    applied_target = self._smooth_brightness(raw_target)
                     lines = []
                     for monitor in monitors:
                         name = monitor.name or 'Unnamed monitor'
@@ -347,18 +424,18 @@ class BrightnessDimmerApp:
                         lines.append(
                             f'{name}: current {current_pct}% (raw {monitor.cur_brightness}), hardware range {monitor.min_brightness}-{monitor.max_brightness}'
                         )
-                        if target is not None:
-                            target_value = self._percent_to_monitor_value(monitor, target)
+                        if applied_target is not None:
+                            target_value = self._percent_to_monitor_value(monitor, applied_target)
                             success = self.monitor_manager.set_brightness(monitor.handle, target_value)
                             if success:
-                                lines.append(f'  set to {target}% (raw {target_value})')
+                                lines.append(f'  set to {applied_target}% (raw {target_value})')
                             else:
                                 lines.append('  failed to set brightness')
                     if self.monitor_success_count >= self.MONITOR_STABLE_CYCLES:
                         updates['monitor_list'] = lines
                         updates['monitor_status'] = 'Monitors adjusted.'
+                    updates['target_brightness'] = applied_target
                 updates['current_lux'] = lux
-                updates['target_brightness'] = target
                 updates['last_error'] = self.sensor_manager.last_error or ''
             except Exception as exc:
                 updates['last_error'] = f'Worker error: {exc}'
