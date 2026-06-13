@@ -22,8 +22,11 @@ class BrightnessDimmerApp:
     DEFAULT_MAX_LUX = 300.0
     DEFAULT_MIN_BRIGHTNESS = 20
     DEFAULT_MAX_BRIGHTNESS = 100
-    DEFAULT_REFRESH_MS = 1.0
+    DEFAULT_REFRESH_S = 1.0
     RETAIN_MONITOR_TIMEOUT = 10.0
+    # Number of consecutive successful enumeration cycles required before we
+    # publish the monitor list, so a stale first read on startup is skipped.
+    MONITOR_STABLE_CYCLES = 2
 
     def __init__(self, args):
         self.args = args
@@ -36,6 +39,7 @@ class BrightnessDimmerApp:
         self.monitor_failure_count = 0
         self.last_good_monitors = []
         self.last_good_monitors_time = 0.0
+        self._state_lock = threading.Lock()
         self.state = {
             'current_lux': None,
             'target_brightness': None,
@@ -48,10 +52,10 @@ class BrightnessDimmerApp:
         self.max_lux = args.max_lux if args.max_lux is not None else self.settings.get('max_lux', self.DEFAULT_MAX_LUX)
         self.min_brightness = args.min_brightness if args.min_brightness is not None else self.settings.get('min_brightness', self.DEFAULT_MIN_BRIGHTNESS)
         self.max_brightness = args.max_brightness if args.max_brightness is not None else self.settings.get('max_brightness', self.DEFAULT_MAX_BRIGHTNESS)
-        self.interval = args.interval if args.interval is not None else self.settings.get('interval', self.DEFAULT_REFRESH_MS)
+        self.interval = args.interval if args.interval is not None else self.settings.get('interval', self.DEFAULT_REFRESH_S)
         self.show_lux = args.show_lux if args.show_lux is not None else self.settings.get('show_lux', False)
         self.minimize_to_tray = args.minimize_to_tray if args.minimize_to_tray is not None else self.settings.get('minimize_to_tray', False)
-        self.start_minimized = args.start_minimized if args.start_minimized is not None else False
+        self.start_minimized = args.start_minimized if args.start_minimized is not None else self.settings.get('start_minimized', False)
         self.tray_icon = None
 
         if self.min_lux >= self.max_lux:
@@ -59,7 +63,7 @@ class BrightnessDimmerApp:
         if self.min_brightness >= self.max_brightness:
             self.max_brightness = min(100, self.min_brightness + 1)
         if self.interval <= 0:
-            self.interval = self.DEFAULT_REFRESH_MS
+            self.interval = self.DEFAULT_REFRESH_S
 
         self.root = tk.Tk()
         self.root.title('Brightness Dimmer')
@@ -110,15 +114,18 @@ class BrightnessDimmerApp:
                         'interval': self.interval,
                         'show_lux': self.show_lux,
                         'minimize_to_tray': self.minimize_to_tray,
-                        'remote_hub': self.args.remote_hub or self.settings.get('remote_hub', 'usb'),
+                        'start_minimized': self.start_minimized,
+                        'remote_hub': self.sensor_manager.hub_url,
                         'window_geometry': self.root.winfo_geometry(),
                     },
                     settings_file,
                     indent=2,
                 )
-            self.state['monitor_status'] = 'Settings saved.'
+            with self._state_lock:
+                self.state['monitor_status'] = 'Settings saved.'
         except Exception as exc:
-            self.state['last_error'] = f'Failed to save settings: {exc}'
+            with self._state_lock:
+                self.state['last_error'] = f'Failed to save settings: {exc}'
 
 
     def _hide_to_tray(self):
@@ -126,7 +133,8 @@ class BrightnessDimmerApp:
             self.tray_icon = TrayIcon(self.root, 'Brightness Dimmer', self._tray_action)
             self.tray_icon.show()
         self.root.withdraw()
-        self.state['monitor_status'] = 'Hidden to tray. Double-click tray icon or use menu to restore.'
+        with self._state_lock:
+            self.state['monitor_status'] = 'Hidden to tray. Double-click tray icon or use menu to restore.'
 
     def _restore_from_tray(self):
         if self.tray_icon is not None:
@@ -134,15 +142,23 @@ class BrightnessDimmerApp:
             self.tray_icon = None
         self.root.deiconify()
         self.root.after(0, self.root.lift)
-        self.state['monitor_status'] = 'Restored from tray.'
+        with self._state_lock:
+            self.state['monitor_status'] = 'Restored from tray.'
 
     def _tray_action(self, action):
         if action == 'restore':
             self._restore_from_tray()
         elif action == 'quit':
             self.running = False
+            self._join_worker()
+            self.monitor_manager.destroy_monitors()
             self._destroy_tray_icon()
             self.root.destroy()
+
+    def _join_worker(self):
+        worker = getattr(self, 'worker_thread', None)
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=2.0)
 
     def _destroy_tray_icon(self):
         if self.tray_icon is not None:
@@ -241,18 +257,19 @@ class BrightnessDimmerApp:
         self._update_status('Parameters updated.')
 
     def _refresh_monitors(self):
-        self.state['monitor_status'] = 'Refreshing monitor list...'
-        self.state['monitor_list'] = []
-        self.monitor_manager.refresh_monitors()
+        with self._state_lock:
+            self.state['monitor_status'] = 'Refreshing monitor list...'
+            self.state['monitor_list'] = []
         self.monitor_manager.refresh_monitors()
 
     def _reconnect_sensor(self):
-        self.sensor_manager.sensor = None
-        self.sensor_manager._api_ready = False
-        self.state['last_error'] = 'Sensor reconnect requested.'
+        self.sensor_manager.reset()
+        with self._state_lock:
+            self.state['last_error'] = 'Sensor reconnect requested.'
 
     def _update_status(self, message):
-        self.state['monitor_status'] = message
+        with self._state_lock:
+            self.state['monitor_status'] = message
 
     def _compute_brightness(self, lux_value):
         if lux_value is None:
@@ -271,10 +288,12 @@ class BrightnessDimmerApp:
     def _percent_to_monitor_value(self, monitor, brightness_percent):
         if brightness_percent is None:
             return None
-        percent = max(0, min(100, brightness_percent)) / 100.0
+        clamped_percent = max(0, min(100, brightness_percent))
+        # No usable hardware range reported; fall back to the raw percentage.
         if monitor.max_brightness <= monitor.min_brightness:
-            return int(round(percent * 100))
-        raw_value = monitor.min_brightness + percent * (monitor.max_brightness - monitor.min_brightness)
+            return clamped_percent
+        fraction = clamped_percent / 100.0
+        raw_value = monitor.min_brightness + fraction * (monitor.max_brightness - monitor.min_brightness)
         return int(round(raw_value))
 
     def _monitor_value_to_percent(self, monitor, value):
@@ -284,6 +303,7 @@ class BrightnessDimmerApp:
 
     def _worker_loop(self):
         while self.running:
+            updates = {}
             try:
                 self.sensor_manager.tick()
                 lux = self.sensor_manager.get_lux()
@@ -300,21 +320,21 @@ class BrightnessDimmerApp:
                             lines.append(
                                 f'{name}: last known current {current_pct}% (raw {monitor.cur_brightness}), hardware range {monitor.min_brightness}-{monitor.max_brightness}'
                             )
-                        self.state['monitor_list'] = lines
+                        updates['monitor_list'] = lines
                         timeout_left = int(self.RETAIN_MONITOR_TIMEOUT - (time.time() - self.last_good_monitors_time))
                         if timeout_left < 0:
                             timeout_left = 0
-                        self.state['monitor_status'] = (
-                            f'Temporary monitor loss detected. Retaining last known monitor list for {timeout_left}s while retrying...'
-                        )
                         target_text = f' Target brightness would be {target}%' if target is not None else ''
-                        self.state['monitor_status'] += target_text
+                        updates['monitor_status'] = (
+                            f'Temporary monitor loss detected. Retaining last known monitor list for {timeout_left}s while retrying...'
+                            + target_text
+                        )
                     else:
                         target_text = f' Target brightness would be {target}%' if target is not None else ''
-                        self.state['monitor_status'] = (
+                        updates['monitor_status'] = (
                             f'No compatible monitors found. Ensure your monitor supports Windows DDC/CI brightness control. Waiting for reconnect...{target_text}'
                         )
-                        self.state['monitor_list'] = []
+                        updates['monitor_list'] = []
                 else:
                     self.monitor_success_count += 1
                     self.monitor_failure_count = 0
@@ -334,30 +354,36 @@ class BrightnessDimmerApp:
                                 lines.append(f'  set to {target}% (raw {target_value})')
                             else:
                                 lines.append('  failed to set brightness')
-                    if self.monitor_success_count >= 2:
-                        self.state['monitor_list'] = lines
-                        self.state['monitor_status'] = 'Monitors adjusted.'
-                self.state['current_lux'] = lux
-                self.state['target_brightness'] = target
-                self.state['last_error'] = self.sensor_manager.last_error or ''
+                    if self.monitor_success_count >= self.MONITOR_STABLE_CYCLES:
+                        updates['monitor_list'] = lines
+                        updates['monitor_status'] = 'Monitors adjusted.'
+                updates['current_lux'] = lux
+                updates['target_brightness'] = target
+                updates['last_error'] = self.sensor_manager.last_error or ''
             except Exception as exc:
-                self.state['last_error'] = f'Worker error: {exc}'
+                updates['last_error'] = f'Worker error: {exc}'
                 if self.args.debug:
                     traceback.print_exc()
+            with self._state_lock:
+                self.state.update(updates)
             time.sleep(self.interval)
 
     def _refresh_ui(self):
-        status_text = self.state.get('monitor_status', '')
-        if self.state.get('last_error'):
-            status_text += ' | ' + self.state['last_error']
+        with self._state_lock:
+            state = dict(self.state)
 
+        status_text = state.get('monitor_status', '')
+        if state.get('last_error'):
+            status_text += ' | ' + state['last_error']
+
+        current_lux = state.get('current_lux')
         if self.show_lux:
-            lux_text = f'Current lux: {self.state['current_lux']:.2f}' if self.state['current_lux'] is not None else 'Current lux: n/a'
+            lux_text = f'Current lux: {current_lux:.2f}' if current_lux is not None else 'Current lux: n/a'
         else:
             lux_text = 'Current lux: hidden'
         self.lux_label.config(text=lux_text)
 
-        target = self.state.get('target_brightness')
+        target = state.get('target_brightness')
         self.target_label.config(text=f'Target brightness: {target}%' if target is not None else 'Target brightness: n/a')
 
         # write the status as the first line in the monitor listbox, then monitor info
@@ -365,7 +391,7 @@ class BrightnessDimmerApp:
         if status_text:
             self.monitor_listbox.insert(tk.END, status_text)
             self.monitor_listbox.insert(tk.END, '---')
-        for line in self.state.get('monitor_list', []):
+        for line in state.get('monitor_list', []):
             self.monitor_listbox.insert(tk.END, line)
 
         if self.running:
@@ -376,6 +402,7 @@ class BrightnessDimmerApp:
             self._hide_to_tray()
             return
         self.running = False
+        self._join_worker()
         self.monitor_manager.destroy_monitors()
         self._destroy_tray_icon()
         self.root.destroy()

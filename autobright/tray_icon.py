@@ -12,6 +12,15 @@ TPM_RIGHTBUTTON = 0x0002
 TPM_RETURNCMD = 0x0100
 MF_STRING = 0x0000
 
+# Shell_NotifyIconW messages
+NIM_ADD = 0x00000000
+NIM_DELETE = 0x00000002
+
+# NOTIFYICONDATAW.uFlags: the message, icon, and tooltip fields are valid
+NIF_MESSAGE = 0x00000001
+NIF_ICON = 0x00000002
+NIF_TIP = 0x00000004
+
 
 class TrayIcon:
     class NOTIFYICONDATAW(ctypes.Structure):
@@ -60,7 +69,7 @@ class TrayIcon:
         self._data.cbSize = ctypes.sizeof(self._data)
         self._data.hWnd = self.hwnd
         self._data.uID = 1
-        self._data.uFlags = 0x00000007
+        self._data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
         self._data.uCallbackMessage = WM_USER + 1
         self._data.hIcon = self._load_icon()
         self._data.szTip = self.tooltip
@@ -92,10 +101,10 @@ class TrayIcon:
         return ctypes.windll.user32.LoadIconW(None, ctypes.c_wchar_p(IDI_APPLICATION))
 
     def show(self):
-        ctypes.windll.shell32.Shell_NotifyIconW(0x00000000, ctypes.byref(self._data))
+        ctypes.windll.shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(self._data))
 
     def hide(self):
-        ctypes.windll.shell32.Shell_NotifyIconW(0x00000002, ctypes.byref(self._data))
+        ctypes.windll.shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self._data))
 
     def cleanup(self):
         try:

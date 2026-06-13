@@ -47,19 +47,17 @@ class YoctoSensorManager:
         self.sensor = None
         self.last_error = ''
         self._api_ready = False
+        self._leds_configured = False
 
     def _debug(self, message):
         if self.debug:
             print('[Yocto]', message)
 
-    def _make_errmsg(self, msg):
-        if YRefParam:
-            err = YRefParam()
-            try:
-                return msg, err
-            except Exception:
-                return msg, msg
-        return msg, msg
+    def reset(self):
+        """Force a full reconnect on the next tick (drops the sensor and hub registration)."""
+        self.sensor = None
+        self._api_ready = False
+        self._leds_configured = False
 
     def _register_hub(self):
         if YAPI is None:
@@ -89,10 +87,13 @@ class YoctoSensorManager:
             success_code = YAPI_SUCCESS if YAPI_SUCCESS is not None else getattr(YAPI, 'SUCCESS', 0)
             if result != success_code:
                 self.last_error = str(err.value) if hasattr(err, 'value') else str(err)
+                # Force re-registration on the next tick; the hub was likely lost.
+                self._api_ready = False
                 return False
             return True
         except Exception as exc:
             self.last_error = f'UpdateDeviceList failed: {exc}'
+            self._api_ready = False
             return False
 
     def _disable_yocto_leds(self):
@@ -152,7 +153,10 @@ class YoctoSensorManager:
             except Exception:
                 pass
 
-        if hasattr(self.sensor, 'get_module'):
+        # The LED/beacon state is persisted to flash, so only write it once per
+        # connection. Flash has a limited number of write cycles and find_sensor
+        # can run on every reconnect.
+        if not self._leds_configured and hasattr(self.sensor, 'get_module'):
             try:
                 module = self.sensor.get_module()
                 if module is not None:
@@ -173,8 +177,9 @@ class YoctoSensorManager:
                             pass
             except Exception:
                 pass
+            self._disable_yocto_leds()
+            self._leds_configured = True
 
-        self._disable_yocto_leds()
         self.last_error = ''
         return True
 
