@@ -81,6 +81,9 @@ class BrightnessDimmerApp:
         # Smoothing state, mutated only by the worker thread.
         self._smoothed_brightness = None
         self._effective_lux = None
+        # Raw value last successfully sent to each monitor handle, used to skip
+        # redundant DDC/CI writes when the target has not changed.
+        self._last_sent_values = {}
 
         self.root = tk.Tk()
         self.root.title('Brightness Dimmer')
@@ -417,6 +420,14 @@ class BrightnessDimmerApp:
                     self.last_good_monitors = monitors
                     self.last_good_monitors_time = time.time()
                     applied_target = self._smooth_brightness(raw_target)
+                    # Drop tracked values for handles no longer present so the dict
+                    # cannot grow unbounded or match a reused handle.
+                    current_handles = {monitor.handle for monitor in monitors}
+                    self._last_sent_values = {
+                        handle: value
+                        for handle, value in self._last_sent_values.items()
+                        if handle in current_handles
+                    }
                     lines = []
                     for monitor in monitors:
                         name = monitor.name or 'Unnamed monitor'
@@ -426,11 +437,20 @@ class BrightnessDimmerApp:
                         )
                         if applied_target is not None:
                             target_value = self._percent_to_monitor_value(monitor, applied_target)
-                            success = self.monitor_manager.set_brightness(monitor.handle, target_value)
-                            if success:
-                                lines.append(f'  set to {applied_target}% (raw {target_value})')
+                            # Skip the write when the target already matches both
+                            # what we last sent and what the monitor reports, so an
+                            # external change still triggers a re-assert.
+                            if (self._last_sent_values.get(monitor.handle) == target_value
+                                    and monitor.cur_brightness == target_value):
+                                lines.append(f'  unchanged at {applied_target}% (raw {target_value})')
                             else:
-                                lines.append('  failed to set brightness')
+                                success = self.monitor_manager.set_brightness(monitor.handle, target_value)
+                                if success:
+                                    self._last_sent_values[monitor.handle] = target_value
+                                    lines.append(f'  set to {applied_target}% (raw {target_value})')
+                                else:
+                                    self._last_sent_values.pop(monitor.handle, None)
+                                    lines.append('  failed to set brightness')
                     if self.monitor_success_count >= self.MONITOR_STABLE_CYCLES:
                         updates['monitor_list'] = lines
                         updates['monitor_status'] = 'Monitors adjusted.'
