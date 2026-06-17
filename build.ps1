@@ -15,7 +15,7 @@ $pyinstallerArgs += "--workpath=$projectRoot\build"
 $pyinstallerArgs += 'autobright.spec'
 
 Write-Host "Running PyInstaller with: $($pyinstallerArgs -join ' ')" -ForegroundColor Cyan
-pyinstaller @pyinstallerArgs
+python -m PyInstaller @pyinstallerArgs
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host 'Build completed successfully.' -ForegroundColor Green
