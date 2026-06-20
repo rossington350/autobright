@@ -8,8 +8,11 @@
     mc:Ignorable="d"
     Title="Brightness Dimmer">
 
-    <ScrollViewer Padding="12">
-        <StackPanel Spacing="6" MinWidth="420">
+    <ScrollViewer Padding="12"
+                  HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled"
+                  VerticalScrollBarVisibility="Auto"
+                  HorizontalContentAlignment="Stretch">
+        <StackPanel Spacing="6" MinWidth="320" HorizontalAlignment="Stretch">
 
             <Grid ColumnSpacing="8" RowSpacing="6">
                 <Grid.ColumnDefinitions>
