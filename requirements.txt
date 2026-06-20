@@ -1,5 +1,0 @@
-# Optional dependency: Yoctopuce Python library is required for sensor access.
-# Tkinter is included with Python on Windows.
-
-# Yoctopuce modules are usually provided as yocto_api.py and yocto_lightsensor.py.
-# Install instructions are available from https://www.yoctopuce.com/
