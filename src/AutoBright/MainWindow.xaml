@@ -27,30 +27,31 @@
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Min lux:" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="0" Grid.Column="1" x:Name="MinLuxBox" />
+                <TextBox   Grid.Row="0" Grid.Column="1" x:Name="MinLuxBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Text="Max lux:" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="1" Grid.Column="1" x:Name="MaxLuxBox" />
+                <TextBox   Grid.Row="1" Grid.Column="1" x:Name="MaxLuxBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
 
                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Min brightness (%):" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="2" Grid.Column="1" x:Name="MinBrightnessBox" />
+                <TextBox   Grid.Row="2" Grid.Column="1" x:Name="MinBrightnessBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
 
                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Max brightness (%):" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="3" Grid.Column="1" x:Name="MaxBrightnessBox" />
+                <TextBox   Grid.Row="3" Grid.Column="1" x:Name="MaxBrightnessBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
 
                 <TextBlock Grid.Row="4" Grid.Column="0" Text="Update rate (s):" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="4" Grid.Column="1" x:Name="IntervalBox" />
+                <TextBox   Grid.Row="4" Grid.Column="1" x:Name="IntervalBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
 
                 <TextBlock Grid.Row="5" Grid.Column="0" Text="Max change rate (%/s):" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="5" Grid.Column="1" x:Name="MaxRateBox" />
+                <TextBox   Grid.Row="5" Grid.Column="1" x:Name="MaxRateBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
 
                 <TextBlock Grid.Row="6" Grid.Column="0" Text="Lux hysteresis:" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="6" Grid.Column="1" x:Name="HysteresisBox" />
+                <TextBox   Grid.Row="6" Grid.Column="1" x:Name="HysteresisBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
             </Grid>
 
-            <CheckBox x:Name="TrayCheck" Content="Minimize to tray on close" />
+            <CheckBox x:Name="TrayCheck" Content="Minimize to tray on close"
+                      Checked="OnSettingCommitted" Unchecked="OnSettingCommitted" />
 
-            <Button x:Name="ApplyButton" Content="Apply" HorizontalAlignment="Stretch" Click="OnApplyClick" />
+            <TextBlock x:Name="SettingsStatus" Text="" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
 
             <TextBlock x:Name="LuxLabel" Text="Current lux: ?" />
             <TextBlock x:Name="TargetLabel" Text="Target brightness: ?" />

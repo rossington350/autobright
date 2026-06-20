@@ -17,8 +17,15 @@ public sealed partial class MainWindow : Window
     private readonly AppSettings _settings;
     private readonly IntPtr _hwnd;
     private DispatcherQueueTimer? _uiTimer;
+    private DispatcherQueueTimer? _geometrySaveTimer;
     private TrayIcon? _tray;
     private bool _shuttingDown;
+    // Suppress auto-save while we are programmatically populating fields or
+    // restoring the window, so init does not trigger a commit/save.
+    private bool _suppressCommit = true;
+    private Microsoft.UI.Xaml.Media.Brush? _defaultStatusBrush;
+    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush _errorStatusBrush =
+        new(Microsoft.UI.Colors.OrangeRed);
 
     public MainWindow(CommandLineOptions options)
     {
@@ -28,13 +35,23 @@ public sealed partial class MainWindow : Window
         this.InitializeComponent();
 
         _hwnd = WindowNative.GetWindowHandle(this);
+        _defaultStatusBrush = SettingsStatus.Foreground;
 
         PopulateFields();
         RestoreGeometry();
 
         this.AppWindow.Closing += OnAppWindowClosing;
+        this.AppWindow.Changed += OnAppWindowChanged;
+
+        _geometrySaveTimer = this.DispatcherQueue.CreateTimer();
+        _geometrySaveTimer.Interval = TimeSpan.FromMilliseconds(400);
+        _geometrySaveTimer.IsRepeating = false;
+        _geometrySaveTimer.Tick += (_, _) => SaveSettings();
 
         _controller.Start();
+
+        // Field/window changes are now allowed to auto-save.
+        _suppressCommit = false;
 
         _uiTimer = this.DispatcherQueue.CreateTimer();
         _uiTimer.Interval = TimeSpan.FromMilliseconds(500);
@@ -69,10 +86,30 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    // ---- Button handlers --------------------------------------------------
+    // ---- Settings auto-commit --------------------------------------------
 
-    private async void OnApplyClick(object sender, RoutedEventArgs e)
+    private void OnSettingCommitted(object sender, RoutedEventArgs e) => CommitSettings();
+
+    private void OnSettingKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
+        if (e.Key == Windows.System.VirtualKey.Enter)
+        {
+            CommitSettings();
+        }
+    }
+
+    /// <summary>
+    /// Validate every field as a set and, when valid, apply and persist the
+    /// settings. Invalid input is reported inline (no modal dialog) and leaves
+    /// the previously applied configuration untouched.
+    /// </summary>
+    private void CommitSettings()
+    {
+        if (_suppressCommit)
+        {
+            return;
+        }
+
         if (!TryParseField(MinLuxBox.Text, out double minLux)
             || !TryParseField(MaxLuxBox.Text, out double maxLux)
             || !TryParseInt(MinBrightnessBox.Text, out int minBrightness)
@@ -81,38 +118,22 @@ public sealed partial class MainWindow : Window
             || !TryParseField(MaxRateBox.Text, out double maxRate)
             || !TryParseField(HysteresisBox.Text, out double hysteresis))
         {
-            await ShowError("Please enter valid numeric values for min/max lux, brightness, update rate, change rate, and hysteresis.");
+            SetSettingsStatus("Enter valid numeric values for all fields.", error: true);
             return;
         }
 
-        if (minLux >= maxLux)
+        string? error =
+            minLux >= maxLux ? "Minimum lux must be lower than maximum lux."
+            : !(minBrightness is >= 0 and <= 100 && maxBrightness is >= 0 and <= 100) ? "Brightness values must be between 0 and 100."
+            : minBrightness >= maxBrightness ? "Minimum brightness must be lower than maximum brightness."
+            : interval <= 0 ? "Update rate must be greater than zero."
+            : maxRate < 0 ? "Max change rate cannot be negative (use 0 to disable smoothing)."
+            : hysteresis < 0 ? "Lux hysteresis cannot be negative (use 0 to disable it)."
+            : null;
+
+        if (error != null)
         {
-            await ShowError("Minimum lux must be lower than maximum lux.");
-            return;
-        }
-        if (!(minBrightness is >= 0 and <= 100 && maxBrightness is >= 0 and <= 100))
-        {
-            await ShowError("Brightness values must be between 0 and 100.");
-            return;
-        }
-        if (minBrightness >= maxBrightness)
-        {
-            await ShowError("Minimum brightness must be lower than maximum brightness.");
-            return;
-        }
-        if (interval <= 0)
-        {
-            await ShowError("Update rate must be greater than zero.");
-            return;
-        }
-        if (maxRate < 0)
-        {
-            await ShowError("Max change rate cannot be negative (use 0 to disable smoothing).");
-            return;
-        }
-        if (hysteresis < 0)
-        {
-            await ShowError("Lux hysteresis cannot be negative (use 0 to disable it).");
+            SetSettingsStatus(error, error: true);
             return;
         }
 
@@ -131,9 +152,37 @@ public sealed partial class MainWindow : Window
             StartMinimized = previous.StartMinimized,
             RemoteHub = previous.RemoteHub,
         };
+
+        // Nothing actually changed (e.g. focus left an untouched field).
+        if (ConfigEquals(previous, updated))
+        {
+            return;
+        }
+
         _controller.ApplyConfig(updated);
         SaveSettings();
+        SetSettingsStatus("Settings saved.", error: false);
     }
+
+    private static bool ConfigEquals(ConfigData a, ConfigData b) =>
+        a.MinLux == b.MinLux
+        && a.MaxLux == b.MaxLux
+        && a.MinBrightness == b.MinBrightness
+        && a.MaxBrightness == b.MaxBrightness
+        && a.Interval == b.Interval
+        && a.MaxBrightnessRate == b.MaxBrightnessRate
+        && a.LuxHysteresis == b.LuxHysteresis
+        && a.MinimizeToTray == b.MinimizeToTray;
+
+    private void SetSettingsStatus(string message, bool error)
+    {
+        SettingsStatus.Text = message;
+        SettingsStatus.Foreground = error
+            ? _errorStatusBrush
+            : (_defaultStatusBrush ?? SettingsStatus.Foreground);
+    }
+
+    // ---- Button handlers --------------------------------------------------
 
     private void OnRefreshClick(object sender, RoutedEventArgs e) => _controller.RequestRefreshMonitors();
 
@@ -188,6 +237,20 @@ public sealed partial class MainWindow : Window
         Shutdown();
     }
 
+    private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (_suppressCommit || _shuttingDown)
+        {
+            return;
+        }
+        if (args.DidPositionChange || args.DidSizeChange)
+        {
+            // Debounce so a drag/resize persists once, after it settles.
+            _geometrySaveTimer?.Stop();
+            _geometrySaveTimer?.Start();
+        }
+    }
+
     private void Shutdown()
     {
         if (_shuttingDown)
@@ -196,6 +259,7 @@ public sealed partial class MainWindow : Window
         }
         _shuttingDown = true;
         _uiTimer?.Stop();
+        _geometrySaveTimer?.Stop();
         _controller.Stop();
         _controller.DestroyMonitors();
         _tray?.Cleanup();
@@ -326,16 +390,4 @@ public sealed partial class MainWindow : Window
 
     private static bool TryParseInt(string text, out int value)
         => int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
-
-    private async System.Threading.Tasks.Task ShowError(string message)
-    {
-        var dialog = new ContentDialog
-        {
-            Title = "Input error",
-            Content = message,
-            CloseButtonText = "OK",
-            XamlRoot = this.Content.XamlRoot,
-        };
-        await dialog.ShowAsync();
-    }
 }
