@@ -261,16 +261,62 @@ public sealed partial class MainWindow : Window
             ? $"Target brightness: {target}%"
             : "Target brightness: n/a";
 
-        MonitorList.Items.Clear();
+        var lines = new System.Collections.Generic.List<string>();
         if (!string.IsNullOrEmpty(statusText))
         {
-            MonitorList.Items.Add(statusText);
-            MonitorList.Items.Add("---");
+            lines.Add(statusText);
+            lines.Add("---");
         }
-        foreach (string line in state.MonitorList)
+        lines.AddRange(state.MonitorList);
+        UpdateMonitorList(lines);
+    }
+
+    // Cache of the lines currently shown so we can skip no-op refreshes and,
+    // when content does change, update only the rows that differ. This stops the
+    // ListView from flickering / scrolling back to the top every 500 ms.
+    private readonly System.Collections.Generic.List<string> _displayedLines = new();
+
+    private void UpdateMonitorList(System.Collections.Generic.List<string> lines)
+    {
+        if (_displayedLines.Count == lines.Count)
         {
-            MonitorList.Items.Add(line);
+            bool identical = true;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                if (_displayedLines[i] != lines[i])
+                {
+                    identical = false;
+                    break;
+                }
+            }
+            if (identical)
+            {
+                return;
+            }
         }
+
+        var items = MonitorList.Items;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (i < items.Count)
+            {
+                if (items[i] is not string existing || existing != lines[i])
+                {
+                    items[i] = lines[i];
+                }
+            }
+            else
+            {
+                items.Add(lines[i]);
+            }
+        }
+        while (items.Count > lines.Count)
+        {
+            items.RemoveAt(items.Count - 1);
+        }
+
+        _displayedLines.Clear();
+        _displayedLines.AddRange(lines);
     }
 
     // ---- Helpers ----------------------------------------------------------

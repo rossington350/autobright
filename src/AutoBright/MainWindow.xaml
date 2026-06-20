@@ -56,6 +56,9 @@
             <TextBlock x:Name="TargetLabel" Text="Target brightness: ?" />
 
             <ListView x:Name="MonitorList" Height="200"
+                      SelectionMode="None" IsItemClickEnabled="False"
+                      ScrollViewer.VerticalScrollBarVisibility="Auto"
+                      ScrollViewer.VerticalScrollMode="Enabled"
                       BorderThickness="1" BorderBrush="{ThemeResource SystemControlForegroundBaseLowBrush}" />
 
             <StackPanel Orientation="Horizontal" Spacing="8">
