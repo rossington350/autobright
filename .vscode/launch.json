@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch AutoBright (Debug)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/AutoBright/bin/Debug/net10.0-windows10.0.19041.0/AutoBright.exe",
+      "args": [
+        "--show-lux"
+      ],
+      "cwd": "${workspaceFolder}/src/AutoBright",
+      "console": "internalConsole",
+      "stopAtEntry": false
+    }
+  ]
+}

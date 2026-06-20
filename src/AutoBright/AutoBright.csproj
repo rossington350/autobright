@@ -12,6 +12,9 @@
          the host RID when none is supplied so a plain `dotnet build` (or an IDE
          build) works without passing `-r`; `-r win-arm64` still overrides. -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</RuntimeIdentifier>
+    <!-- Keep the exe at a predictable bin\<Config>\<TFM>\ path (no win-x64/
+         win-arm64 subfolder) so launch configs resolve regardless of host RID. -->
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
