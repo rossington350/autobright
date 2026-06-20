@@ -42,14 +42,14 @@ API (no third-party tray dependency).
 
 ## Build
 
-The Windows App SDK is self-contained, so a target architecture (RID) must be
-specified:
-
 ```powershell
-dotnet build src\AutoBright\AutoBright.csproj -c Release -r win-x64
+dotnet build src\AutoBright\AutoBright.csproj -c Release
 ```
 
-(Use `-r win-arm64` on ARM devices.)
+The Windows App SDK is self-contained and therefore needs a concrete
+architecture; the project defaults the runtime identifier to the host's RID, so
+no `-r` flag is required. On an ARM device that builds `win-arm64`
+automatically. To force a specific target, pass e.g. `-r win-x64`.
 
 ## Run
 
