@@ -60,6 +60,10 @@ public sealed class BrightnessController
             MinimizeToTray = options.MinimizeToTray ?? settings.MinimizeToTray,
             StartMinimized = options.StartMinimized ?? settings.StartMinimized,
             RemoteHub = options.RemoteHub ?? (string.IsNullOrWhiteSpace(settings.RemoteHub) ? "usb" : settings.RemoteHub),
+            ManualControl = settings.ManualControl,
+            ManualMode = settings.ManualMode,
+            ManualBrightness = settings.ManualBrightness,
+            ManualAbsolute = settings.ManualAbsolute,
         }.Normalized();
 
         _sensorManager = new YoctoSensorManager(_config.RemoteHub, _debug);
@@ -120,6 +124,19 @@ public sealed class BrightnessController
     }
 
     // ---- Mapping / smoothing helpers --------------------------------------
+
+    /// <summary>
+    /// The target brightness while manual control is active. Min/Max reuse the
+    /// configured brightness limits; Manual uses the slider value.
+    /// </summary>
+    private static int ManualTarget(ConfigData cfg) => cfg.ManualMode switch
+    {
+        ManualMode.Max => cfg.ManualAbsolute ? 100 : cfg.MaxBrightness,
+        ManualMode.Min => cfg.ManualAbsolute ? 0 : cfg.MinBrightness,
+        _ => cfg.ManualAbsolute
+            ? Math.Max(0, Math.Min(100, cfg.ManualBrightness))
+            : Math.Max(cfg.MinBrightness, Math.Min(cfg.MaxBrightness, cfg.ManualBrightness)),
+    };
 
     private static int? ComputeBrightness(ConfigData cfg, double? luxValue)
     {
@@ -238,7 +255,9 @@ public sealed class BrightnessController
                 _sensorManager.Tick();
                 double? lux = _sensorManager.GetLux();
                 double? effectiveLux = ApplyLuxHysteresis(cfg, lux);
-                int? rawTarget = ComputeBrightness(cfg, effectiveLux);
+                int? rawTarget = cfg.ManualControl
+                    ? ManualTarget(cfg)
+                    : ComputeBrightness(cfg, effectiveLux);
                 IReadOnlyList<MonitorInfo> monitors = _monitorManager.EnumerateMonitors(forceRefresh);
 
                 if (monitors.Count == 0)
@@ -283,7 +302,22 @@ public sealed class BrightnessController
                     _monitorFailureCount = 0;
                     _lastGoodMonitors = monitors;
                     _lastGoodMonitorsTime = _clock.Elapsed.TotalSeconds;
-                    int? appliedTarget = SmoothBrightness(cfg, rawTarget);
+                    // Manual control applies immediately, bypassing the change-rate
+                    // limit; keep the smoothing baseline in sync so a later switch
+                    // back to automatic ramps from the current value.
+                    int? appliedTarget;
+                    if (cfg.ManualControl)
+                    {
+                        appliedTarget = rawTarget;
+                        if (rawTarget is int manualValue)
+                        {
+                            _smoothedBrightness = manualValue;
+                        }
+                    }
+                    else
+                    {
+                        appliedTarget = SmoothBrightness(cfg, rawTarget);
+                    }
 
                     // Drop tracked values for handles no longer present.
                     var currentHandles = new HashSet<IntPtr>();

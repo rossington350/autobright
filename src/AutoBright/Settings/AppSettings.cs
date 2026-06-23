@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AutoBright.Controller;
 
 namespace AutoBright.Settings;
 
@@ -31,6 +32,10 @@ public sealed class AppSettings
     public bool MinimizeToTray { get; set; }
     public bool StartMinimized { get; set; }
     public string RemoteHub { get; set; } = "usb";
+    public bool ManualControl { get; set; }
+    public ManualMode ManualMode { get; set; } = ManualMode.Manual;
+    public int ManualBrightness { get; set; } = 50;
+    public bool ManualAbsolute { get; set; }
     public WindowGeometry? WindowGeometry { get; set; }
 
     private const string AppName = "BrightnessDimmer";
@@ -41,6 +46,7 @@ public sealed class AppSettings
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) },
     };
 
     public static string GetSettingsPath()

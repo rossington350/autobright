@@ -8,7 +8,7 @@
     mc:Ignorable="d"
     Title="AutoBright">
 
-    <Grid>
+    <Grid x:Name="RootGrid" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
         <Grid.Resources>
 
             <!-- A subtle, rounded surface used to group related controls. -->
@@ -89,6 +89,46 @@
                         </StackPanel>
                     </Border>
                 </Grid>
+
+                <!-- Manual override -->
+                <StackPanel Spacing="6">
+                    <TextBlock Text="MANUAL OVERRIDE" Style="{StaticResource SectionHeader}" />
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel Spacing="12">
+                            <CheckBox x:Name="ManualCheck" Content="Manual brightness control"
+                                      Checked="OnManualCheckChanged" Unchecked="OnManualCheckChanged" />
+
+                            <StackPanel x:Name="ManualPanel" Spacing="14" Visibility="Collapsed">
+                                <CheckBox x:Name="AbsoluteCheck"
+                                          Content="Use absolute 0–100% range (ignore configured min/max)"
+                                          Checked="OnAbsoluteChanged" Unchecked="OnAbsoluteChanged" />
+
+                                <StackPanel Orientation="Horizontal" Spacing="20">
+                                    <RadioButton x:Name="MinRadio" Content="Min"
+                                                 GroupName="ManualMode" Checked="OnManualModeChanged" />
+                                    <RadioButton x:Name="MaxRadio" Content="Max"
+                                                 GroupName="ManualMode" Checked="OnManualModeChanged" />
+                                    <RadioButton x:Name="ManualRadio" Content="Manual"
+                                                 GroupName="ManualMode" Checked="OnManualModeChanged" />
+                                </StackPanel>
+
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Slider x:Name="ManualSlider" Grid.Column="0"
+                                            Minimum="0" Maximum="100" StepFrequency="1"
+                                            ValueChanged="OnManualSliderChanged"
+                                            VerticalAlignment="Center" />
+                                    <TextBlock x:Name="ManualValueLabel" Grid.Column="1" Text="50%"
+                                               MinWidth="44" TextAlignment="Right"
+                                               FontWeight="SemiBold" VerticalAlignment="Center" />
+                                </Grid>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
 
                 <!-- Settings -->
                 <StackPanel Spacing="6">

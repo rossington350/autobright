@@ -1,6 +1,19 @@
 namespace AutoBright.Controller;
 
 /// <summary>
+/// How brightness is chosen while <see cref="ConfigData.ManualControl"/> is on.
+/// </summary>
+public enum ManualMode
+{
+    /// <summary>Drive the user-set slider value.</summary>
+    Manual,
+    /// <summary>Pin to the configured minimum brightness.</summary>
+    Min,
+    /// <summary>Pin to the configured maximum brightness.</summary>
+    Max,
+}
+
+/// <summary>
 /// An immutable snapshot of all tunable parameters. The controller publishes a
 /// new instance on every change and the worker reads one reference per cycle, so
 /// configuration updates are lock-free and atomic.
@@ -18,6 +31,16 @@ public sealed class ConfigData
     public bool MinimizeToTray { get; init; }
     public bool StartMinimized { get; init; }
     public string RemoteHub { get; init; } = "usb";
+
+    // ---- Manual override --------------------------------------------------
+    // When ManualControl is on, ambient-light mapping is bypassed and the target
+    // brightness comes from ManualMode (and ManualBrightness for Manual mode).
+    public bool ManualControl { get; init; }
+    public ManualMode ManualMode { get; init; } = ManualMode.Manual;
+    public int ManualBrightness { get; init; } = 50;
+    // When true, Min/Max/slider span the absolute 0-100% range; when false they
+    // are bounded by the configured MinBrightness/MaxBrightness.
+    public bool ManualAbsolute { get; init; }
 
     /// <summary>
     /// Apply the same auto-correction the original used when values arrive from
@@ -52,6 +75,8 @@ public sealed class ConfigData
             hysteresis = 0.0;
         }
 
+        int manualBrightness = System.Math.Max(0, System.Math.Min(100, ManualBrightness));
+
         return new ConfigData
         {
             MinLux = MinLux,
@@ -65,6 +90,10 @@ public sealed class ConfigData
             MinimizeToTray = MinimizeToTray,
             StartMinimized = StartMinimized,
             RemoteHub = RemoteHub,
+            ManualControl = ManualControl,
+            ManualMode = ManualMode,
+            ManualBrightness = manualBrightness,
+            ManualAbsolute = ManualAbsolute,
         };
     }
 }
