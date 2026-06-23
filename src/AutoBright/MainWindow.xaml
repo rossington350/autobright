@@ -6,71 +6,169 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
-    Title="Brightness Dimmer">
+    Title="AutoBright">
 
-    <ScrollViewer Padding="12"
-                  HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled"
-                  VerticalScrollBarVisibility="Auto"
-                  HorizontalContentAlignment="Stretch">
-        <StackPanel Spacing="6" MinWidth="320" HorizontalAlignment="Stretch">
+    <Grid>
+        <Grid.Resources>
 
-            <Grid ColumnSpacing="8" RowSpacing="6">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="170" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
+            <!-- A subtle, rounded surface used to group related controls. -->
+            <Style x:Key="Card" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Padding" Value="16" />
+            </Style>
 
-                <TextBlock Grid.Row="0" Grid.Column="0" Text="Min lux:" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="0" Grid.Column="1" x:Name="MinLuxBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+            <Style x:Key="SectionHeader" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Setter Property="CharacterSpacing" Value="60" />
+                <Setter Property="Margin" Value="2,0,0,2" />
+            </Style>
 
-                <TextBlock Grid.Row="1" Grid.Column="0" Text="Max lux:" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="1" Grid.Column="1" x:Name="MaxLuxBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+            <Style x:Key="StatCaption" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="CharacterSpacing" Value="80" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            </Style>
 
-                <TextBlock Grid.Row="2" Grid.Column="0" Text="Min brightness (%):" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="2" Grid.Column="1" x:Name="MinBrightnessBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+            <Style x:Key="StatValue" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="26" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Margin" Value="0,2,0,0" />
+            </Style>
 
-                <TextBlock Grid.Row="3" Grid.Column="0" Text="Max brightness (%):" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="3" Grid.Column="1" x:Name="MaxBrightnessBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+            <Style TargetType="TextBox">
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+            </Style>
+        </Grid.Resources>
 
-                <TextBlock Grid.Row="4" Grid.Column="0" Text="Update rate (s):" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="4" Grid.Column="1" x:Name="IntervalBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+        <ScrollViewer Padding="20"
+                      HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalContentAlignment="Stretch">
+            <StackPanel Spacing="16" MinWidth="360" HorizontalAlignment="Stretch">
 
-                <TextBlock Grid.Row="5" Grid.Column="0" Text="Max change rate (%/s):" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="5" Grid.Column="1" x:Name="MaxRateBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+                <!-- Header -->
+                <StackPanel Orientation="Horizontal" Spacing="12" Margin="2,0,0,0">
+                    <Border Width="40" Height="40" CornerRadius="10"
+                            Background="{ThemeResource AccentFillColorDefaultBrush}"
+                            VerticalAlignment="Center">
+                        <FontIcon Glyph="&#xE706;" FontSize="20"
+                                  Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="AutoBright" FontSize="20" FontWeight="SemiBold" />
+                        <TextBlock Text="Ambient-light brightness control"
+                                   FontSize="13"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </StackPanel>
 
-                <TextBlock Grid.Row="6" Grid.Column="0" Text="Lux hysteresis:" VerticalAlignment="Center" />
-                <TextBox   Grid.Row="6" Grid.Column="1" x:Name="HysteresisBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
-            </Grid>
+                <!-- Live readout -->
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
-            <CheckBox x:Name="TrayCheck" Content="Minimize to tray on close"
-                      Checked="OnSettingCommitted" Unchecked="OnSettingCommitted" />
+                    <Border Grid.Column="0" Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="CURRENT LUX" Style="{StaticResource StatCaption}" />
+                            <TextBlock x:Name="LuxValue" Text="—" Style="{StaticResource StatValue}" />
+                        </StackPanel>
+                    </Border>
 
-            <TextBlock x:Name="SettingsStatus" Text="" Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+                    <Border Grid.Column="1" Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="TARGET BRIGHTNESS" Style="{StaticResource StatCaption}" />
+                            <TextBlock x:Name="TargetValue" Text="—" Style="{StaticResource StatValue}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
 
-            <TextBlock x:Name="LuxLabel" Text="Current lux: ?" />
-            <TextBlock x:Name="TargetLabel" Text="Target brightness: ?" />
+                <!-- Settings -->
+                <StackPanel Spacing="6">
+                    <TextBlock Text="SETTINGS" Style="{StaticResource SectionHeader}" />
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel Spacing="14">
+                            <Grid ColumnSpacing="12" RowSpacing="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
 
-            <ListView x:Name="MonitorList" Height="200"
-                      SelectionMode="None" IsItemClickEnabled="False"
-                      ScrollViewer.VerticalScrollBarVisibility="Auto"
-                      ScrollViewer.VerticalScrollMode="Enabled"
-                      BorderThickness="1" BorderBrush="{ThemeResource SystemControlForegroundBaseLowBrush}" />
+                                <TextBox Grid.Row="0" Grid.Column="0" Header="Min lux"
+                                         x:Name="MinLuxBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+                                <TextBox Grid.Row="0" Grid.Column="1" Header="Max lux"
+                                         x:Name="MaxLuxBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
 
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="RefreshButton" Content="Refresh monitors" Click="OnRefreshClick" />
-                <Button x:Name="ReconnectButton" Content="Reconnect sensor" Click="OnReconnectClick" />
-                <Button x:Name="HideButton" Content="Hide to tray" Click="OnHideClick" />
+                                <TextBox Grid.Row="1" Grid.Column="0" Header="Min brightness (%)"
+                                         x:Name="MinBrightnessBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+                                <TextBox Grid.Row="1" Grid.Column="1" Header="Max brightness (%)"
+                                         x:Name="MaxBrightnessBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+
+                                <TextBox Grid.Row="2" Grid.Column="0" Header="Update rate (s)"
+                                         x:Name="IntervalBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+                                <TextBox Grid.Row="2" Grid.Column="1" Header="Max change rate (%/s)"
+                                         x:Name="MaxRateBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+
+                                <TextBox Grid.Row="3" Grid.Column="0" Header="Lux hysteresis"
+                                         x:Name="HysteresisBox" LostFocus="OnSettingCommitted" KeyDown="OnSettingKeyDown" />
+                            </Grid>
+
+                            <Border Height="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+
+                            <CheckBox x:Name="TrayCheck" Content="Minimize to tray on close"
+                                      Checked="OnSettingCommitted" Unchecked="OnSettingCommitted" />
+
+                            <TextBlock x:Name="SettingsStatus" Text=""
+                                       TextWrapping="Wrap"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- Monitors -->
+                <StackPanel Spacing="6">
+                    <TextBlock Text="MONITORS" Style="{StaticResource SectionHeader}" />
+                    <Border Style="{StaticResource Card}" Padding="16,14">
+                        <StackPanel Spacing="10">
+                            <TextBlock x:Name="WorkerStatus" Text="Starting…"
+                                       TextWrapping="Wrap"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                            <ListView x:Name="MonitorList" Height="180"
+                                      Padding="0"
+                                      SelectionMode="None" IsItemClickEnabled="False"
+                                      ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                      ScrollViewer.VerticalScrollMode="Enabled"
+                                      FontFamily="Consolas" FontSize="13"
+                                      Background="{ThemeResource ControlFillColorDefaultBrush}"
+                                      BorderThickness="1"
+                                      CornerRadius="6"
+                                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button x:Name="RefreshButton" Content="Refresh monitors"
+                                        Style="{ThemeResource AccentButtonStyle}" Click="OnRefreshClick" />
+                                <Button x:Name="ReconnectButton" Content="Reconnect sensor" Click="OnReconnectClick" />
+                                <Button x:Name="HideButton" Content="Hide to tray" Click="OnHideClick" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
             </StackPanel>
-
-        </StackPanel>
-    </ScrollViewer>
+        </ScrollViewer>
+    </Grid>
 </Window>

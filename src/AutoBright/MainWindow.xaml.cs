@@ -24,6 +24,7 @@ public sealed partial class MainWindow : Window
     // restoring the window, so init does not trigger a commit/save.
     private bool _suppressCommit = true;
     private Microsoft.UI.Xaml.Media.Brush? _defaultStatusBrush;
+    private Microsoft.UI.Xaml.Media.Brush? _defaultWorkerBrush;
     private readonly Microsoft.UI.Xaml.Media.SolidColorBrush _errorStatusBrush =
         new(Microsoft.UI.Colors.OrangeRed);
 
@@ -34,8 +35,12 @@ public sealed partial class MainWindow : Window
 
         this.InitializeComponent();
 
+        // A Mica backdrop gives the window the modern, translucent Windows 11 look.
+        this.SystemBackdrop = new Microsoft.UI.Xaml.Media.MicaBackdrop();
+
         _hwnd = WindowNative.GetWindowHandle(this);
         _defaultStatusBrush = SettingsStatus.Foreground;
+        _defaultWorkerBrush = WorkerStatus.Foreground;
 
         PopulateFields();
         RestoreGeometry();
@@ -83,6 +88,11 @@ public sealed partial class MainWindow : Window
         if (geom != null && geom.Width > 0 && geom.Height > 0)
         {
             this.AppWindow.MoveAndResize(new RectInt32(geom.X, geom.Y, geom.Width, geom.Height));
+        }
+        else
+        {
+            // First run: a compact default that fits the content without scrolling.
+            this.AppWindow.Resize(new SizeInt32(460, 720));
         }
     }
 
@@ -304,35 +314,28 @@ public sealed partial class MainWindow : Window
     {
         AppState state = _controller.GetSnapshot();
 
-        string statusText = state.MonitorStatus;
-        if (!string.IsNullOrEmpty(state.LastError))
-        {
-            statusText += " | " + state.LastError;
-        }
-
         if (_controller.Config.ShowLux)
         {
-            LuxLabel.Text = state.CurrentLux is double lux
-                ? $"Current lux: {lux.ToString("F2", CultureInfo.InvariantCulture)}"
-                : "Current lux: n/a";
+            LuxValue.Text = state.CurrentLux is double lux
+                ? $"{lux.ToString("F1", CultureInfo.InvariantCulture)} lx"
+                : "n/a";
         }
         else
         {
-            LuxLabel.Text = "Current lux: hidden";
+            LuxValue.Text = "hidden";
         }
 
-        TargetLabel.Text = state.TargetBrightness is int target
-            ? $"Target brightness: {target}%"
-            : "Target brightness: n/a";
+        TargetValue.Text = state.TargetBrightness is int target ? $"{target}%" : "n/a";
 
-        var lines = new System.Collections.Generic.List<string>();
-        if (!string.IsNullOrEmpty(statusText))
-        {
-            lines.Add(statusText);
-            lines.Add("---");
-        }
-        lines.AddRange(state.MonitorList);
-        UpdateMonitorList(lines);
+        bool hasError = !string.IsNullOrEmpty(state.LastError);
+        WorkerStatus.Text = hasError
+            ? $"{state.MonitorStatus}  •  {state.LastError}"
+            : state.MonitorStatus;
+        WorkerStatus.Foreground = hasError
+            ? _errorStatusBrush
+            : (_defaultWorkerBrush ?? WorkerStatus.Foreground);
+
+        UpdateMonitorList(state.MonitorList);
     }
 
     // Cache of the lines currently shown so we can skip no-op refreshes and,
