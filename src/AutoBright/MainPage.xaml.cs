@@ -1,52 +1,49 @@
-using System;
+using System.Collections.ObjectModel;
 using System.Globalization;
-using Microsoft.UI.Dispatching;
-using Microsoft.UI.Windowing;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Windows.Graphics;
-using WinRT.Interop;
 using AutoBright.Controller;
 using AutoBright.Settings;
+using Microsoft.UI.Windowing;
+using Windows.Graphics;
 
 namespace AutoBright;
 
-public sealed partial class MainWindow : Window
+public partial class MainPage : ContentPage
 {
     private readonly BrightnessController _controller;
     private readonly AppSettings _settings;
-    private readonly IntPtr _hwnd;
-    private DispatcherQueueTimer? _uiTimer;
-    private DispatcherQueueTimer? _geometrySaveTimer;
-    private DispatcherQueueTimer? _settingsSaveTimer;
+
+    private Microsoft.UI.Xaml.Window? _nativeWindow;
+    private AppWindow? _appWindow;
+    private IntPtr _hwnd;
+
+    private IDispatcherTimer? _uiTimer;
+    private IDispatcherTimer? _geometrySaveTimer;
+    private IDispatcherTimer? _settingsSaveTimer;
     private TrayIcon? _tray;
     private WindowGeometry? _lastGoodGeometry;
     private bool _shuttingDown;
+
     // Suppress auto-save while we are programmatically populating fields or
     // restoring the window, so init does not trigger a commit/save.
     private bool _suppressCommit = true;
-    private Microsoft.UI.Xaml.Media.Brush? _defaultStatusBrush;
-    private Microsoft.UI.Xaml.Media.Brush? _defaultWorkerBrush;
-    private readonly Microsoft.UI.Xaml.Media.SolidColorBrush _errorStatusBrush =
-        new(Microsoft.UI.Colors.OrangeRed);
 
-    public MainWindow(CommandLineOptions options)
+    private readonly ObservableCollection<string> _monitorLines = new();
+
+    private static readonly Color ErrorColor = Color.FromArgb("#E74C3C");
+
+    // Smallest restorable window; anything smaller is treated as a bad save.
+    private const int MinRestoreSize = 200;
+    // Windows parks minimized windows near (-32000, -32000); reject that sentinel.
+    private const int OffScreenSentinel = -30000;
+
+    public MainPage(CommandLineOptions options)
     {
         _settings = AppSettings.Load();
         _controller = new BrightnessController(options, _settings);
 
-        this.InitializeComponent();
+        InitializeComponent();
 
-        // The root grid paints a solid themed background by default so the window
-        // is always visible. A Mica backdrop is layered on top only when the
-        // platform actually supports it; if it cannot render we keep the solid
-        // fill rather than ending up with an invisible, transparent window.
-        TrySetMicaBackdrop();
-
-        _hwnd = WindowNative.GetWindowHandle(this);
-        TrySetWindowIcon();
-        _defaultStatusBrush = SettingsStatus.Foreground;
-        _defaultWorkerBrush = WorkerStatus.Foreground;
+        MonitorList.ItemsSource = _monitorLines;
 
         // Seed the last-good geometry from settings only if it looks valid, so a
         // previously-saved bad rectangle is never written back out.
@@ -59,19 +56,26 @@ public sealed partial class MainWindow : Window
         }
 
         PopulateFields();
-        RestoreGeometry();
 
-        this.AppWindow.Closing += OnAppWindowClosing;
-        this.AppWindow.Changed += OnAppWindowChanged;
+        Loaded += OnPageLoaded;
+    }
 
-        _geometrySaveTimer = this.DispatcherQueue.CreateTimer();
+    // ---- Lifecycle --------------------------------------------------------
+
+    private void OnPageLoaded(object? sender, EventArgs e)
+    {
+        Loaded -= OnPageLoaded;
+
+        WireNativeWindow();
+
+        _geometrySaveTimer = Dispatcher.CreateTimer();
         _geometrySaveTimer.Interval = TimeSpan.FromMilliseconds(400);
         _geometrySaveTimer.IsRepeating = false;
         _geometrySaveTimer.Tick += (_, _) => SaveSettings();
 
         // The slider raises ValueChanged continuously while dragged; apply live but
         // debounce the disk write so we persist once the drag settles.
-        _settingsSaveTimer = this.DispatcherQueue.CreateTimer();
+        _settingsSaveTimer = Dispatcher.CreateTimer();
         _settingsSaveTimer.Interval = TimeSpan.FromMilliseconds(400);
         _settingsSaveTimer.IsRepeating = false;
         _settingsSaveTimer.Tick += (_, _) => SaveSettings();
@@ -81,8 +85,9 @@ public sealed partial class MainWindow : Window
         // Field/window changes are now allowed to auto-save.
         _suppressCommit = false;
 
-        _uiTimer = this.DispatcherQueue.CreateTimer();
+        _uiTimer = Dispatcher.CreateTimer();
         _uiTimer.Interval = TimeSpan.FromMilliseconds(500);
+        _uiTimer.IsRepeating = true;
         _uiTimer.Tick += (_, _) => RefreshUi();
         _uiTimer.Start();
 
@@ -91,6 +96,100 @@ public sealed partial class MainWindow : Window
             HideToTray();
         }
     }
+
+    /// <summary>
+    /// Resolve the underlying WinUI window / AppWindow from the MAUI window handler
+    /// so the same Win32-backed window management the original used (geometry
+    /// persistence, hide-to-tray, custom icon) can run unchanged.
+    /// </summary>
+    private void WireNativeWindow()
+    {
+        _nativeWindow = this.Window?.Handler?.PlatformView as Microsoft.UI.Xaml.Window;
+        if (_nativeWindow == null)
+        {
+            return;
+        }
+
+        _hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_nativeWindow);
+        Microsoft.UI.WindowId id = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(_hwnd);
+        _appWindow = AppWindow.GetFromWindowId(id);
+
+        TrySetWindowIcon();
+        TrySetMicaBackdrop();
+        RestoreGeometry();
+
+        if (_appWindow != null)
+        {
+            _appWindow.Closing += OnAppWindowClosing;
+            _appWindow.Changed += OnAppWindowChanged;
+        }
+    }
+
+    private void TrySetWindowIcon()
+    {
+        try
+        {
+            string path = Path.Combine(AppContext.BaseDirectory, "icon.ico");
+            if (File.Exists(path))
+            {
+                _appWindow?.SetIcon(path);
+            }
+        }
+        catch
+        {
+            // Non-fatal: fall back to the default window icon.
+        }
+    }
+
+    private void TrySetMicaBackdrop()
+    {
+        try
+        {
+            if (_nativeWindow != null && Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported())
+            {
+                _nativeWindow.SystemBackdrop = new Microsoft.UI.Xaml.Media.MicaBackdrop();
+                // Let the backdrop show through instead of the solid page fill.
+                this.BackgroundColor = Colors.Transparent;
+            }
+        }
+        catch
+        {
+            // Unsupported / failed: keep the solid background from XAML.
+        }
+    }
+
+    private void RestoreGeometry()
+    {
+        if (_appWindow == null)
+        {
+            return;
+        }
+
+        WindowGeometry? geom = _settings.WindowGeometry;
+        if (geom != null
+            && geom.Width >= MinRestoreSize && geom.Height >= MinRestoreSize
+            && geom.X > OffScreenSentinel && geom.Y > OffScreenSentinel)
+        {
+            // Clamp the saved rectangle onto a currently-connected display so a
+            // monitor change can't leave the window stranded off-screen.
+            var saved = new RectInt32(geom.X, geom.Y, geom.Width, geom.Height);
+            DisplayArea area = DisplayArea.GetFromRect(saved, DisplayAreaFallback.Nearest);
+            RectInt32 work = area.WorkArea;
+
+            int width = Math.Min(geom.Width, work.Width);
+            int height = Math.Min(geom.Height, work.Height);
+            int x = Math.Max(work.X, Math.Min(geom.X, work.X + work.Width - width));
+            int y = Math.Max(work.Y, Math.Min(geom.Y, work.Y + work.Height - height));
+            _appWindow.MoveAndResize(new RectInt32(x, y, width, height));
+        }
+        else
+        {
+            // First run: a compact default that fits the content without scrolling.
+            _appWindow.Resize(new SizeInt32(460, 720));
+        }
+    }
+
+    // ---- Field population -------------------------------------------------
 
     private void PopulateFields()
     {
@@ -118,82 +217,11 @@ public sealed partial class MainWindow : Window
         UpdateManualVisibility();
     }
 
-    private void TrySetWindowIcon()
-    {
-        try
-        {
-            string path = System.IO.Path.Combine(AppContext.BaseDirectory, "icon.ico");
-            if (System.IO.File.Exists(path))
-            {
-                this.AppWindow.SetIcon(path);
-            }
-        }
-        catch
-        {
-            // Non-fatal: fall back to the default window icon.
-        }
-    }
-
-    private void TrySetMicaBackdrop()
-    {
-        try
-        {
-            if (Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported())
-            {
-                this.SystemBackdrop = new Microsoft.UI.Xaml.Media.MicaBackdrop();
-                // Let the backdrop show through instead of the solid fill.
-                RootGrid.Background = null;
-            }
-        }
-        catch
-        {
-            // Unsupported / failed: keep the solid background from XAML.
-        }
-    }
-
-    // Smallest restorable window; anything smaller is treated as a bad save.
-    private const int MinRestoreSize = 200;
-    // Windows parks minimized windows near (-32000, -32000); reject that sentinel.
-    private const int OffScreenSentinel = -30000;
-
-    private void RestoreGeometry()
-    {
-        WindowGeometry? geom = _settings.WindowGeometry;
-        if (geom != null
-            && geom.Width >= MinRestoreSize && geom.Height >= MinRestoreSize
-            && geom.X > OffScreenSentinel && geom.Y > OffScreenSentinel)
-        {
-            // Clamp the saved rectangle onto a currently-connected display so a
-            // monitor change can't leave the window stranded off-screen.
-            var saved = new RectInt32(geom.X, geom.Y, geom.Width, geom.Height);
-            Microsoft.UI.Windowing.DisplayArea area =
-                Microsoft.UI.Windowing.DisplayArea.GetFromRect(saved, Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
-            RectInt32 work = area.WorkArea;
-
-            int width = Math.Min(geom.Width, work.Width);
-            int height = Math.Min(geom.Height, work.Height);
-            int x = Math.Max(work.X, Math.Min(geom.X, work.X + work.Width - width));
-            int y = Math.Max(work.Y, Math.Min(geom.Y, work.Y + work.Height - height));
-            this.AppWindow.MoveAndResize(new RectInt32(x, y, width, height));
-        }
-        else
-        {
-            // First run: a compact default that fits the content without scrolling.
-            this.AppWindow.Resize(new SizeInt32(460, 720));
-        }
-    }
-
     // ---- Settings auto-commit --------------------------------------------
 
-    private void OnSettingCommitted(object sender, RoutedEventArgs e) => CommitSettings();
+    private void OnSettingCommitted(object? sender, EventArgs e) => CommitSettings();
 
-    private void OnSettingKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
-    {
-        if (e.Key == Windows.System.VirtualKey.Enter)
-        {
-            CommitSettings();
-        }
-    }
+    private void OnSettingCompleted(object? sender, EventArgs e) => CommitSettings();
 
     /// <summary>
     /// Validate every field as a set and, when valid, apply and persist the
@@ -272,24 +300,24 @@ public sealed partial class MainWindow : Window
             MaxBrightnessRate = maxRate,
             LuxHysteresis = hysteresis,
             ShowLux = previous.ShowLux,
-            MinimizeToTray = TrayCheck.IsChecked == true,
+            MinimizeToTray = TrayCheck.IsChecked,
             StartMinimized = previous.StartMinimized,
             RemoteHub = previous.RemoteHub,
-            ManualControl = ManualCheck.IsChecked == true,
+            ManualControl = ManualCheck.IsChecked,
             ManualMode = GetSelectedManualMode(),
             ManualBrightness = (int)Math.Round(ManualSlider.Value),
-            ManualAbsolute = AbsoluteCheck.IsChecked == true,
+            ManualAbsolute = AbsoluteCheck.IsChecked,
         };
         return true;
     }
 
     private ManualMode GetSelectedManualMode()
     {
-        if (MaxRadio.IsChecked == true)
+        if (MaxRadio.IsChecked)
         {
             return ManualMode.Max;
         }
-        if (MinRadio.IsChecked == true)
+        if (MinRadio.IsChecked)
         {
             return ManualMode.Min;
         }
@@ -313,14 +341,22 @@ public sealed partial class MainWindow : Window
     private void SetSettingsStatus(string message, bool error)
     {
         SettingsStatus.Text = message;
-        SettingsStatus.Foreground = error
-            ? _errorStatusBrush
-            : (_defaultStatusBrush ?? SettingsStatus.Foreground);
+        SettingsStatus.IsVisible = !string.IsNullOrEmpty(message);
+        SettingsStatus.TextColor = error ? ErrorColor : SecondaryTextColor();
+    }
+
+    private static Color SecondaryTextColor()
+    {
+        bool dark = Application.Current?.RequestedTheme == AppTheme.Dark;
+        object? key = Application.Current?.Resources is { } res
+            && res.TryGetValue(dark ? "SecondaryTextDark" : "SecondaryTextLight", out object? v)
+            ? v : null;
+        return key as Color ?? (dark ? Colors.LightGray : Colors.Gray);
     }
 
     // ---- Manual override --------------------------------------------------
 
-    private void OnManualCheckChanged(object sender, RoutedEventArgs e)
+    private void OnManualCheckChanged(object? sender, CheckedChangedEventArgs e)
     {
         UpdateManualVisibility();
         if (_suppressCommit)
@@ -330,7 +366,7 @@ public sealed partial class MainWindow : Window
 
         // When manual control is switched on, seed the slider with the brightness
         // we are currently driving so there is no visible jump.
-        if (ManualCheck.IsChecked == true)
+        if (ManualCheck.IsChecked)
         {
             double seed = _controller.GetSnapshot().TargetBrightness ?? ManualSlider.Value;
             seed = Math.Max(ManualSlider.Minimum, Math.Min(ManualSlider.Maximum, seed));
@@ -342,13 +378,19 @@ public sealed partial class MainWindow : Window
         CommitSettings();
     }
 
-    private void OnManualModeChanged(object sender, RoutedEventArgs e)
+    private void OnManualModeChanged(object? sender, CheckedChangedEventArgs e)
     {
+        // CheckedChanged fires for both the newly-selected and newly-cleared radio;
+        // act only on the one that became selected.
+        if (!e.Value)
+        {
+            return;
+        }
         UpdateManualVisibility();
         CommitSettings();
     }
 
-    private void OnAbsoluteChanged(object sender, RoutedEventArgs e)
+    private void OnAbsoluteChanged(object? sender, CheckedChangedEventArgs e)
     {
         UpdateManualSliderRange();
         CommitSettings();
@@ -360,7 +402,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void UpdateManualSliderRange()
     {
-        bool absolute = AbsoluteCheck.IsChecked == true;
+        bool absolute = AbsoluteCheck.IsChecked;
         double min = absolute ? 0 : _controller.Config.MinBrightness;
         double max = absolute ? 100 : _controller.Config.MaxBrightness;
         if (max <= min)
@@ -370,8 +412,18 @@ public sealed partial class MainWindow : Window
 
         bool previous = _suppressCommit;
         _suppressCommit = true;
-        ManualSlider.Minimum = min;
-        ManualSlider.Maximum = max;
+        // Maximum must always be >= Minimum during assignment; order the writes so
+        // the range never passes through an invalid (max < min) intermediate state.
+        if (min <= ManualSlider.Maximum)
+        {
+            ManualSlider.Minimum = min;
+            ManualSlider.Maximum = max;
+        }
+        else
+        {
+            ManualSlider.Maximum = max;
+            ManualSlider.Minimum = min;
+        }
         if (ManualSlider.Value < min)
         {
             ManualSlider.Value = min;
@@ -384,12 +436,9 @@ public sealed partial class MainWindow : Window
         _suppressCommit = previous;
     }
 
-    private void OnManualSliderChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    private void OnManualSliderChanged(object? sender, ValueChangedEventArgs e)
     {
-        if (ManualValueLabel != null)
-        {
-            ManualValueLabel.Text = $"{(int)Math.Round(e.NewValue)}%";
-        }
+        ManualValueLabel.Text = $"{(int)Math.Round(e.NewValue)}%";
         if (_suppressCommit)
         {
             return;
@@ -406,29 +455,29 @@ public sealed partial class MainWindow : Window
 
     private void UpdateManualVisibility()
     {
-        bool manual = ManualCheck.IsChecked == true;
-        ManualPanel.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
-        ManualSlider.IsEnabled = manual && ManualRadio.IsChecked == true;
+        bool manual = ManualCheck.IsChecked;
+        ManualPanel.IsVisible = manual;
+        ManualSlider.IsEnabled = manual && ManualRadio.IsChecked;
     }
 
     // ---- Button handlers --------------------------------------------------
 
-    private void OnRefreshClick(object sender, RoutedEventArgs e) => _controller.RequestRefreshMonitors();
+    private void OnRefreshClick(object? sender, EventArgs e) => _controller.RequestRefreshMonitors();
 
-    private void OnReconnectClick(object sender, RoutedEventArgs e) => _controller.RequestReconnectSensor();
+    private void OnReconnectClick(object? sender, EventArgs e) => _controller.RequestReconnectSensor();
 
-    private void OnHideClick(object sender, RoutedEventArgs e) => HideToTray();
+    private void OnHideClick(object? sender, EventArgs e) => HideToTray();
 
     // ---- Tray / window lifecycle -----------------------------------------
 
     private void HideToTray()
     {
-        if (_tray == null)
+        if (_tray == null && _hwnd != IntPtr.Zero)
         {
             _tray = new TrayIcon(_hwnd, "Brightness Dimmer", OnTrayAction);
             _tray.Show();
         }
-        this.AppWindow.Hide();
+        _appWindow?.Hide();
     }
 
     private void RestoreFromTray()
@@ -438,32 +487,42 @@ public sealed partial class MainWindow : Window
             _tray.Cleanup();
             _tray = null;
         }
-        this.AppWindow.Show();
-        this.Activate();
+        _appWindow?.Show();
+        _nativeWindow?.Activate();
     }
 
     private void OnTrayAction(string action)
     {
-        if (action == "restore")
+        // The tray callback arrives on a non-UI thread (the window message pump
+        // for the subclassed HWND); marshal back to the UI thread.
+        Dispatcher.Dispatch(() =>
         {
-            RestoreFromTray();
-        }
-        else if (action == "quit")
-        {
-            Shutdown();
-        }
+            if (action == "restore")
+            {
+                RestoreFromTray();
+            }
+            else if (action == "quit")
+            {
+                Shutdown(quit: true);
+            }
+        });
     }
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        // Always cancel the native close so we can run an orderly shutdown.
-        args.Cancel = true;
-        if (_controller.Config.MinimizeToTray && !_shuttingDown)
+        if (_shuttingDown)
         {
+            // Let the close proceed so the process can exit.
+            return;
+        }
+        if (_controller.Config.MinimizeToTray)
+        {
+            args.Cancel = true;
             HideToTray();
             return;
         }
-        Shutdown();
+        // Full shutdown: run orderly cleanup, then allow the window to close.
+        Shutdown(quit: false);
     }
 
     private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
@@ -480,7 +539,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void Shutdown()
+    private void Shutdown(bool quit)
     {
         if (_shuttingDown)
         {
@@ -493,10 +552,13 @@ public sealed partial class MainWindow : Window
         _controller.Stop();
         _controller.DestroyMonitors();
         _tray?.Cleanup();
-        Application.Current.Exit();
+        if (quit)
+        {
+            Application.Current?.Quit();
+        }
     }
 
-    // ---- Settings ---------------------------------------------------------
+    // ---- Settings persistence --------------------------------------------
 
     private void SaveSettings()
     {
@@ -505,14 +567,17 @@ public sealed partial class MainWindow : Window
         // Only capture geometry when the window is in a normal, on-screen state.
         // Saving while minimized/hidden would persist the (-32000,-32000) sentinel
         // and a tiny size, which would make the window un-restorable next launch.
-        PointInt32 pos = this.AppWindow.Position;
-        SizeInt32 size = this.AppWindow.Size;
-        bool minimized = (this.AppWindow.Presenter as OverlappedPresenter)?.State == OverlappedPresenterState.Minimized;
-        if (!minimized
-            && pos.X > OffScreenSentinel && pos.Y > OffScreenSentinel
-            && size.Width >= MinRestoreSize && size.Height >= MinRestoreSize)
+        if (_appWindow != null)
         {
-            _lastGoodGeometry = new WindowGeometry { X = pos.X, Y = pos.Y, Width = size.Width, Height = size.Height };
+            PointInt32 pos = _appWindow.Position;
+            SizeInt32 size = _appWindow.Size;
+            bool minimized = (_appWindow.Presenter as OverlappedPresenter)?.State == OverlappedPresenterState.Minimized;
+            if (!minimized
+                && pos.X > OffScreenSentinel && pos.Y > OffScreenSentinel
+                && size.Width >= MinRestoreSize && size.Height >= MinRestoreSize)
+            {
+                _lastGoodGeometry = new WindowGeometry { X = pos.X, Y = pos.Y, Width = size.Width, Height = size.Height };
+            }
         }
 
         var toSave = new AppSettings
@@ -567,26 +632,21 @@ public sealed partial class MainWindow : Window
         WorkerStatus.Text = hasError
             ? $"{state.MonitorStatus}  •  {state.LastError}"
             : state.MonitorStatus;
-        WorkerStatus.Foreground = hasError
-            ? _errorStatusBrush
-            : (_defaultWorkerBrush ?? WorkerStatus.Foreground);
+        WorkerStatus.TextColor = hasError ? ErrorColor : SecondaryTextColor();
 
         UpdateMonitorList(state.MonitorList);
     }
 
-    // Cache of the lines currently shown so we can skip no-op refreshes and,
-    // when content does change, update only the rows that differ. This stops the
-    // ListView from flickering / scrolling back to the top every 500 ms.
-    private readonly System.Collections.Generic.List<string> _displayedLines = new();
-
-    private void UpdateMonitorList(System.Collections.Generic.List<string> lines)
+    private void UpdateMonitorList(List<string> lines)
     {
-        if (_displayedLines.Count == lines.Count)
+        // Update in place so the CollectionView keeps its scroll position and does
+        // not flicker every refresh.
+        if (_monitorLines.Count == lines.Count)
         {
             bool identical = true;
             for (int i = 0; i < lines.Count; i++)
             {
-                if (_displayedLines[i] != lines[i])
+                if (_monitorLines[i] != lines[i])
                 {
                     identical = false;
                     break;
@@ -598,35 +658,31 @@ public sealed partial class MainWindow : Window
             }
         }
 
-        var items = MonitorList.Items;
         for (int i = 0; i < lines.Count; i++)
         {
-            if (i < items.Count)
+            if (i < _monitorLines.Count)
             {
-                if (items[i] is not string existing || existing != lines[i])
+                if (_monitorLines[i] != lines[i])
                 {
-                    items[i] = lines[i];
+                    _monitorLines[i] = lines[i];
                 }
             }
             else
             {
-                items.Add(lines[i]);
+                _monitorLines.Add(lines[i]);
             }
         }
-        while (items.Count > lines.Count)
+        while (_monitorLines.Count > lines.Count)
         {
-            items.RemoveAt(items.Count - 1);
+            _monitorLines.RemoveAt(_monitorLines.Count - 1);
         }
-
-        _displayedLines.Clear();
-        _displayedLines.AddRange(lines);
     }
 
     // ---- Helpers ----------------------------------------------------------
 
-    private static bool TryParseField(string text, out double value)
+    private static bool TryParseField(string? text, out double value)
         => double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
 
-    private static bool TryParseInt(string text, out int value)
+    private static bool TryParseInt(string? text, out int value)
         => int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
 }

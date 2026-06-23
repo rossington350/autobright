@@ -1,21 +1,15 @@
-using System;
-using Microsoft.UI.Xaml;
-
 namespace AutoBright;
 
 public partial class App : Application
 {
-    private Window? _window;
-
     public App()
     {
-        this.InitializeComponent();
+        InitializeComponent();
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override Window CreateWindow(IActivationState? activationState)
     {
         CommandLineOptions options = CommandLineOptions.Parse(Environment.GetCommandLineArgs());
-        _window = new MainWindow(options);
-        _window.Activate();
+        return new Window(new MainPage(options)) { Title = "AutoBright" };
     }
 }
