@@ -39,9 +39,10 @@
          win-arm64 subfolder) so launch configs resolve regardless of host RID. -->
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
 
-    <!-- Unpackaged (no MSIX) desktop app; self-contain the Windows App SDK so no
-         separate runtime install is required. -->
+    <!-- Unpackaged (no MSIX) desktop app. Bundle both the .NET runtime and the
+         Windows App SDK so the app runs on a machine with neither installed. -->
     <WindowsPackageType>None</WindowsPackageType>
+    <SelfContained>true</SelfContained>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <EnableMsixTooling>true</EnableMsixTooling>
   </PropertyGroup>
