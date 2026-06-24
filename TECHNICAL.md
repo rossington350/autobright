@@ -44,6 +44,11 @@ autobright/
 ├─ AutoBright.slnx                      # solution (new XML "slnx" format)
 ├─ SPECIFICATION.md                     # behavioural spec (platform-neutral)
 ├─ TECHNICAL.md                         # this document
+├─ build-installer.ps1                  # publishes framework-dependent + builds the MSI
+├─ installer/                           # WiX MSI (see §17)
+│  ├─ AutoBright.Installer.wixproj       # WiX SDK project (x64, restores WiX from NuGet)
+│  ├─ Package.wxs                       # WiX authoring (payload, shortcut, runtime check, UI)
+│  └─ License.rtf                       # GPL notice shown on the welcome page
 └─ src/
    └─ AutoBright/
       ├─ AutoBright.csproj
@@ -52,6 +57,7 @@ autobright/
       ├─ MauiProgram.cs                 # MauiApp builder (fonts, logging)
       ├─ MainPage.xaml / MainPage.xaml.cs   # the one and only page + all UI logic
       ├─ CommandLineOptions.cs          # CLI parsing
+      ├─ StartupManager.cs              # per-user "run at OS startup" registry entry (§17)
       ├─ TrayIcon.cs                    # Win32 notification-area icon
       ├─ Controller/
       │  ├─ BrightnessController.cs      # worker thread, mapping/smoothing, orchestration
@@ -219,6 +225,7 @@ and atomic.
 | `ShowLux` | bool | false |
 | `MinimizeToTray` | bool | false |
 | `StartMinimized` | bool | false |
+| `RunAtStartup` | bool | false |
 | `RemoteHub` | string | `"usb"` |
 | `ManualControl` | bool | false |
 | `ManualMode` | ManualMode | `Manual` |
@@ -295,8 +302,9 @@ private int _reconnectRequested;   // Interlocked flag
 - Build the initial `ConfigData` with **CLI > settings > default** precedence for
   each field, e.g. `MinLux = options.MinLux ?? settings.MinLux`. For `RemoteHub`:
   `options.RemoteHub ?? (string.IsNullOrWhiteSpace(settings.RemoteHub) ? "usb" : settings.RemoteHub)`.
-- Manual fields come from settings only (no CLI): `ManualControl`, `ManualMode`,
-  `ManualBrightness`, `ManualAbsolute`.
+- Manual fields and `RunAtStartup` come from settings only (no CLI):
+  `ManualControl`, `ManualMode`, `ManualBrightness`, `ManualAbsolute`,
+  `RunAtStartup`.
 - Call `.Normalized()` on the result and store it.
 - Construct `_sensorManager = new YoctoSensorManager(_config.RemoteHub, _debug)`.
 
@@ -725,6 +733,7 @@ So `ManualMode` serializes as `"manual"`/`"min"`/`"max"`, and keys are snake_cas
   "show_lux": false,
   "minimize_to_tray": false,
   "start_minimized": false,
+  "run_at_startup": false,
   "remote_hub": "usb",
   "manual_control": false,
   "manual_mode": "manual",
@@ -842,7 +851,9 @@ transparent at runtime when Mica is applied).
     `MinLuxBox`, `MaxLuxBox`, `MinBrightnessBox`, `MaxBrightnessBox`,
     `IntervalBox`, `MaxRateBox`, `HysteresisBox`.
   - A 1px divider `BoxView`.
-  - `TrayCheck` (CheckBox) `CheckedChanged=OnSettingCommitted`, label "Minimize to tray on close".
+  - Three checkboxes, all `CheckedChanged=OnSettingCommitted`: `TrayCheck`
+    "Minimize to tray on close", `RunAtStartupCheck` "Run at Windows startup",
+    `StartMinimizedCheck` "Start minimized to tray".
   - `SettingsStatus` label (`IsVisible=False`) for inline validation/save feedback.
 - **Monitors card** (`SectionHeader` "MONITORS"):
   - `WorkerStatus` label.
@@ -882,7 +893,9 @@ BrightnessController(options, _settings)`; `InitializeComponent()`;
 `OnPageLoaded` (once): unsubscribe; `WireNativeWindow()`; create the two
 debounced save timers (400 ms, non-repeating) → `SaveSettings`; `_controller.Start()`;
 set `_suppressCommit = false`; create the repeating 500 ms `_uiTimer` →
-`RefreshUi` and start it; if `Config.StartMinimized` → `HideToTray()`.
+`RefreshUi` and start it; reconcile the OS startup entry with the saved setting
+(`StartupManager.Apply(Config.RunAtStartup, Config.StartMinimized)`, §17); if
+`Config.StartMinimized` → `HideToTray()`.
 
 `WireNativeWindow`: resolve `this.Window?.Handler?.PlatformView as
 Microsoft.UI.Xaml.Window`; get `_hwnd` via `WinRT.Interop.WindowNative.GetWindowHandle`;
@@ -903,10 +916,11 @@ display — `DisplayArea.GetFromRect(saved, Nearest).WorkArea`, then
 ### 13.4 Field population
 
 `PopulateFields()` writes every entry from `_controller.Config` using
-`CultureInfo.InvariantCulture`, sets `TrayCheck/AbsoluteCheck/ManualCheck`,
-selects the right manual-mode radio, calls `UpdateManualSliderRange()`, clamps and
-sets `ManualSlider.Value`, updates `ManualValueLabel`, and calls
-`UpdateManualVisibility()`. Runs while `_suppressCommit == true`.
+`CultureInfo.InvariantCulture`, sets `TrayCheck/RunAtStartupCheck/StartMinimizedCheck/
+AbsoluteCheck/ManualCheck`, selects the right manual-mode radio, calls
+`UpdateManualSliderRange()`, clamps and sets `ManualSlider.Value`, updates
+`ManualValueLabel`, and calls `UpdateManualVisibility()`. Runs while
+`_suppressCommit == true`.
 
 ### 13.5 Auto-commit & validation
 
@@ -914,8 +928,10 @@ sets `ManualSlider.Value`, updates `ManualValueLabel`, and calls
 
 `CommitSettings()`: bail if `_suppressCommit`; `TryBuildConfig(out updated)` —
 bail on failure; bail if `ConfigEquals(_controller.Config, updated)` (no change);
-else `_controller.ApplyConfig(updated)`, `SaveSettings()`,
-`SetSettingsStatus("Settings saved.", error:false)`, `UpdateManualSliderRange()`.
+else `_controller.ApplyConfig(updated)`,
+`StartupManager.Apply(updated.RunAtStartup, updated.StartMinimized)` (§17),
+`SaveSettings()`, `SetSettingsStatus("Settings saved.", error:false)`,
+`UpdateManualSliderRange()`.
 
 `TryBuildConfig(out ConfigData)`: parse all seven numeric fields
 (`TryParseField` doubles, `TryParseInt` ints, InvariantCulture). On any parse
@@ -930,13 +946,14 @@ return false. Then validate (first failing message wins):
 - `hysteresis < 0` → "Lux hysteresis cannot be negative (use 0 to disable it)."
 
 On success build a new `ConfigData` carrying the parsed numerics, the checkboxes
-(`MinimizeToTray=TrayCheck`, `ManualControl=ManualCheck`,
+(`MinimizeToTray=TrayCheck`, `RunAtStartup=RunAtStartupCheck`,
+`StartMinimized=StartMinimizedCheck`, `ManualControl=ManualCheck`,
 `ManualAbsolute=AbsoluteCheck`), `ManualMode=GetSelectedManualMode()`,
 `ManualBrightness=round(ManualSlider.Value)`, and preserving non-UI fields
-(`ShowLux`, `StartMinimized`, `RemoteHub`) from the previous config.
+(`ShowLux`, `RemoteHub`) from the previous config.
 
-`ConfigEquals` compares every field **except** `ShowLux`/`StartMinimized`/`RemoteHub`
-(those aren't UI-editable).
+`ConfigEquals` compares every field **except** `ShowLux`/`RemoteHub` (those aren't
+UI-editable).
 
 `SetSettingsStatus(msg, error)` sets text/visibility and colour (`ErrorColor`
 when error, else the theme secondary-text colour from `SecondaryTextColor()`).
@@ -1048,6 +1065,7 @@ radius), `SectionHeader` (12pt bold, CharacterSpacing 1, secondary colour),
 | Default max brightness rate | 25.0 %/s (0 disables) | `ConfigData` |
 | Default lux hysteresis | 10.0 lux (0 disables) | `ConfigData` |
 | Default manual control / mode / brightness / absolute | off / manual / 50 % / off | `ConfigData` |
+| Default run at startup / start minimized | off / off | `ConfigData` |
 | Monitor-retain grace period | 10.0 s | `RetainMonitorTimeout` |
 | Stable cycles before publishing | 2 | `MonitorStableCycles` |
 | UI refresh period | 500 ms | `_uiTimer` |
@@ -1075,12 +1093,99 @@ radius), `SectionHeader` (12pt bold, CharacterSpacing 1, secondary colour),
 5. Implement `BrightnessController` with the §6 algorithms and worker loop,
    matching the exact status/line strings and the success/failure/retain logic.
 6. Implement `AppSettings` JSON load/save (§10) and `CommandLineOptions` (§11).
-7. Implement `TrayIcon` (§9).
+7. Implement `TrayIcon` (§9) and `StartupManager` (§17).
 8. Wire the MAUI bootstrap (§12) and build `MainPage` XAML + code-behind (§13),
-   including auto-commit, manual override, geometry persistence, tray, and the
-   flicker-free monitor list.
+   including auto-commit, manual override, the run-at-startup / start-minimized
+   options, geometry persistence, tray, and the flicker-free monitor list.
 9. Add `AppStyles.xaml` (§14).
 10. Verify against the behavioural contract in SPECIFICATION.md, especially the
     resilience requirements (sensor absent, monitors lost, write failures, worker
     exceptions — all non-fatal).
+11. (Optional, for distribution) Build the WiX MSI (§18) via `build-installer.ps1`.
+
+---
+
+## 17. `StartupManager` — `StartupManager.cs`
+
+Manages the per-user "run at OS startup" entry. Static helper, best-effort
+(registry failures are swallowed and never crash the app).
+
+```csharp
+private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+private const string ValueName  = "AutoBright";
+
+public static void Apply(bool runAtStartup, bool startMinimized);
+public static bool IsEnabled();
 ```
+
+`Apply`:
+
+- Open/create `HKCU\…\Run` (writable).
+- If `runAtStartup`: `exe = Environment.ProcessPath` (the running executable); if
+  empty, return. Write `ValueName` = `"\"{exe}\""`, with ` --start-minimized`
+  appended when `startMinimized` is true (so a login launch goes straight to the
+  tray; the switch is parsed by `CommandLineOptions`, §11).
+- Else: delete `ValueName` if present (`throwOnMissingValue: false`).
+
+`IsEnabled`: true if the `Run` value exists.
+
+Called from `CommitSettings` (every settings change) and once in `OnPageLoaded`
+(§13.3/§13.5), so the stored command tracks the current exe path across moves and
+reinstalls. Uses `Microsoft.Win32.Registry` (available on the `-windows` TFM; no
+extra package reference).
+
+---
+
+## 18. MSI Installer — `installer/` + `build-installer.ps1`
+
+A WiX v5 installer that wraps a **framework-dependent** publish. The .NET runtime
+is deliberately not bundled; the Windows App SDK is (so the only external
+dependency is the .NET Desktop Runtime), and the installer recognises that runtime
+as a prerequisite.
+
+### 18.1 `build-installer.ps1`
+
+Params `-Configuration Release -Rid win-x64 -Version 1.0.0.0`. Steps:
+
+1. Clean `artifacts/publish`, then publish framework-dependent:
+   `dotnet publish … -r $Rid --self-contained false -p:WindowsAppSDKSelfContained=true -o artifacts/publish`
+   (the `--self-contained false` overrides the csproj's self-contained default).
+2. Force a clean MSI rebuild (WiX's incremental build keys off the `.wxs`/
+   `.wixproj`, **not** the harvested folder's contents, so stale payloads must be
+   avoided): delete `installer/bin` + `installer/obj`, then
+   `dotnet build installer/AutoBright.Installer.wixproj -c $Configuration -t:Rebuild -p:ProductVersion=$Version -p:AppPublishDir=artifacts/publish`.
+3. Report the produced `.msi` under `installer/bin`.
+
+### 18.2 `AutoBright.Installer.wixproj`
+
+`<Project Sdk="WixToolset.Sdk/5.0.2">`, `OutputType=Package`. Key properties:
+
+- `InstallerPlatform=x64` — so harvested components default to 64-bit and install
+  cleanly under the 64-bit Program Files (avoids ICE80).
+- `SuppressValidation=true` — the harvested Microsoft binaries trip benign
+  ICE03/ICE60 language warnings; the hand-authored parts are kept ICE-clean.
+- `DefineConstants=ProductVersion=…;AppPublishDir=…` — exposed to the WiX
+  preprocessor as `$(var.ProductVersion)` / `$(var.AppPublishDir)`.
+- `PackageReference WixToolset.UI.wixext 5.0.2` — the setup-wizard dialog set.
+
+Only the .NET SDK is needed; the WiX SDK is restored from NuGet by `dotnet build`.
+
+### 18.3 `Package.wxs`
+
+- `Package` perMachine, x64, UpgradeCode fixed; `MajorUpgrade`; ARP icon
+  (`icon.ico`) + help link.
+- **Runtime dependency check:** a `Property DOTNETDESKTOPRUNTIME` with nested
+  `DirectorySearch` walking `[ProgramFiles64Folder]dotnet` → `shared` →
+  `Microsoft.WindowsDesktop.App`; a `Launch` condition
+  `Installed OR DOTNETDESKTOPRUNTIME` whose message points at
+  `https://dotnet.microsoft.com/download/dotnet/10.0` when the runtime is absent.
+- **UI:** `<ui:WixUI Id="WixUI_Minimal" />` + `WixUILicenseRtf` = `License.rtf`
+  (GPL notice). Gives welcome/license → progress → **"Setup completed"** dialog.
+- **Payload:** `<Files Include="$(var.AppPublishDir)\**" />` harvested into
+  `INSTALLFOLDER` (`ProgramFiles64Folder\AutoBright`); `AutoBright.exe` lands at
+  the root.
+- **Shortcut:** a Start Menu shortcut component (`ProgramMenuFolder\AutoBright`)
+  targeting `[INSTALLFOLDER]AutoBright.exe`, keyed off an HKCU registry value
+  (standard non-advertised-shortcut pattern), with `RemoveFolder` on uninstall.
+
+Output: `installer/bin/Release/AutoBright-<version>-win-x64.msi`.

@@ -64,6 +64,7 @@ auto-saves on edit; there is no explicit "save" or "apply" step).
 | `show_lux` | Whether the GUI displays the live lux reading | false | boolean |
 | `minimize_to_tray` | If true, closing the window hides to tray instead of quitting | false | boolean |
 | `start_minimized` | If true, app starts hidden in the tray | false | boolean |
+| `run_at_startup` | If true, the app is registered to launch automatically when the user logs in to the OS (§9.1) | false | boolean |
 | `remote_hub` | Sensor connection target: `"usb"` for a locally attached sensor, or a network hub address | `"usb"` | string |
 | `manual_control` | If true, ignore the sensor and drive monitors from the manual settings below (§4.5) | false | boolean |
 | `manual_mode` | Manual target source: `manual` (slider), `min`, or `max` | `manual` | one of `manual`/`min`/`max` |
@@ -361,9 +362,10 @@ There is **no explicit Save/Apply button** — every editable control auto-commi
 
 - **Settings card** — numeric entry fields for **Min lux**, **Max lux**, **Min
   brightness (%)**, **Max brightness (%)**, **Update rate (s)**, **Max change
-  rate (%/s)**, **Lux hysteresis**, and a checkbox **"Minimize to tray on
-  close"**. A status line beneath the fields shows save/validation feedback
-  (§8.4).
+  rate (%/s)**, **Lux hysteresis**, and three checkboxes: **"Minimize to tray on
+  close"** (`minimize_to_tray`), **"Run at Windows startup"** (`run_at_startup`,
+  §9.1), and **"Start minimized to tray"** (`start_minimized`). A status line
+  beneath the fields shows save/validation feedback (§8.4).
 - **Manual override card** — a checkbox **"Manual brightness control"** that
   reveals, when enabled: a checkbox **"Use absolute 0–100% range (ignore
   configured min/max)"** (`manual_absolute`), a three-way **Min / Max / Manual**
@@ -376,7 +378,7 @@ There is **no explicit Save/Apply button** — every editable control auto-commi
   no visible jump.
 
 Some persisted parameters are **not** surfaced as GUI controls and are set only
-via CLI/settings: `show_lux`, `start_minimized`, and `remote_hub`.
+via CLI/settings: `show_lux` and `remote_hub`.
 
 ### 8.2 Buttons (Monitors card)
 
@@ -451,6 +453,24 @@ The app can run minimized to the OS notification area:
 
 The tray icon should use a bundled application icon if available, falling back
 to a default system icon.
+
+### 9.1 Run at OS startup
+
+When `run_at_startup` is enabled, the app registers itself with the operating
+system's per-user "run on login" mechanism (the reference implementation writes
+the executable path to the Windows `HKCU\…\CurrentVersion\Run` registry key;
+equivalent mechanisms exist elsewhere, e.g. a `.desktop` autostart entry or a
+launch agent). When disabled, the registration is removed.
+
+- The stored launch command points at the **current executable**, and includes
+  the `--start-minimized` switch (§11) when `start_minimized` is also enabled, so
+  a login launch goes straight to the tray.
+- Registration is **best-effort**: failure to read or write the OS mechanism is
+  ignored and never crashes the app.
+- The registration is reconciled with the saved setting **on every settings
+  change and once at launch**, so that a moved or reinstalled executable is
+  re-registered with the correct path.
+- It uses a **per-user** mechanism, requiring no elevation.
 
 ---
 
@@ -553,6 +573,16 @@ launch/build configurations resolve regardless of host architecture. Any
 equivalent packaging that produces a self-contained desktop binary satisfies this
 requirement; it is not part of the runtime behaviour.
 
+The reference implementation additionally ships an **MSI installer** built from a
+*framework-dependent* publish (the .NET runtime is **not** bundled, keeping the
+download small; the Windows App SDK still is, so the only external dependency is
+the .NET Desktop Runtime). The installer **recognises that runtime as a
+prerequisite**: it detects whether the runtime's shared framework is present and,
+if absent, blocks the install with guidance to download it. It installs per
+machine, adds a Start Menu shortcut, and runs a setup wizard that ends with a
+"setup complete" dialog. Packaging form is informative only; any installer that
+declares the runtime dependency is acceptable.
+
 ---
 
 ## 15. Default Constants Reference
@@ -570,6 +600,8 @@ requirement; it is not part of the runtime behaviour.
 | Default manual mode | manual |
 | Default manual brightness | 50 % |
 | Default manual absolute range | off |
+| Default run at OS startup | off |
+| Default start minimized | off |
 | Monitor-retain grace period | 10.0 s |
 | Stable cycles before publishing monitor list | 2 |
 | UI refresh period | ~500 ms |
