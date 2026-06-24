@@ -11,10 +11,14 @@ vendor, or operating system API is used. An AI or developer given this document
 should be able to reproduce a functionally equivalent application on any
 platform.
 
-The reference implementation is a Windows desktop application written in Python,
-but every requirement below is stated in terms of capabilities (read ambient
-light, enumerate monitors, set monitor brightness, persist settings, show a
-GUI), each of which has analogues on other platforms.
+The reference implementation is a Windows desktop application named **AutoBright**,
+written in **C# on .NET 10 using .NET MAUI** (with the WinUI 3 / Windows App SDK
+window underneath). Because the hardware it drives is Windows-specific (DDC/CI
+monitor brightness, a USB Yoctopuce light sensor, a Win32 notification-area
+icon), it ships as a single Windows target rather than a cross-platform MAUI head
+set. Even so, every requirement below is stated in terms of capabilities (read
+ambient light, enumerate monitors, set monitor brightness, persist settings, show
+a GUI), each of which has analogues on other platforms.
 
 ---
 
@@ -33,9 +37,14 @@ optional system-tray/notification-area presence. On a fixed timer it:
 6. Updates the GUI with live status: current lux, target brightness, per-monitor
    state, and any error messages.
 
+The automatic lux-driven behaviour can be overridden: a **manual control** mode
+bypasses the sensor mapping entirely and drives every monitor to a user-chosen
+brightness (a fixed minimum, a fixed maximum, or a slider value) — see §4.5.
+
 It tolerates the sensor being unplugged and monitors being disconnected,
 recovering automatically when hardware returns. All tunable parameters can be
-changed live through the GUI and are persisted to disk between runs.
+changed live through the GUI and are persisted to disk between runs (the GUI
+auto-saves on edit; there is no explicit "save" or "apply" step).
 
 ---
 
@@ -56,7 +65,11 @@ changed live through the GUI and are persisted to disk between runs.
 | `minimize_to_tray` | If true, closing the window hides to tray instead of quitting | false | boolean |
 | `start_minimized` | If true, app starts hidden in the tray | false | boolean |
 | `remote_hub` | Sensor connection target: `"usb"` for a locally attached sensor, or a network hub address | `"usb"` | string |
-| `window_geometry` | Saved window size/position | (none) | platform-defined string |
+| `manual_control` | If true, ignore the sensor and drive monitors from the manual settings below (§4.5) | false | boolean |
+| `manual_mode` | Manual target source: `manual` (slider), `min`, or `max` | `manual` | one of `manual`/`min`/`max` |
+| `manual_brightness` | The manual slider value (percent) used when `manual_mode` = `manual` | 50 | 0–100 |
+| `manual_absolute` | If true, the manual Min/Max/slider span the absolute 0–100% range; if false they are bounded by `min_brightness`/`max_brightness` | false | boolean |
+| `window_geometry` | Saved window position and size (`x`, `y`, `width`, `height`) | (none) | object/struct |
 
 ### 3.2 Per-monitor data
 
@@ -153,6 +166,25 @@ translated per monitor:
 - **Raw → percent** (for display): if no usable range, show the raw value;
   otherwise `round((raw - min) / (max - min) * 100)`.
 
+### 4.5 Manual override
+
+When `manual_control` is enabled, the lux-to-brightness mapping (§4.1) is
+**bypassed** and the target brightness comes from the manual settings instead.
+The sensor is still read (and shown in the GUI), and lux hysteresis is still
+computed, but its result is not used to pick the target. The manual target is:
+
+| `manual_mode` | `manual_absolute = false` | `manual_absolute = true` |
+|---|---|---|
+| `max` | `max_brightness` | `100` |
+| `min` | `min_brightness` | `0` |
+| `manual` | `manual_brightness` clamped to `[min_brightness, max_brightness]` | `manual_brightness` clamped to `[0, 100]` |
+
+Manual control **applies immediately**, bypassing the slew-rate limiter (§4.3):
+the chosen value is written to every monitor on the next cycle with no ramp. To
+avoid a visible jump when the user later switches back to automatic mode, the
+smoothing baseline (`smoothed_brightness`) is kept in sync with the manual value
+each cycle, so automatic ramping resumes from wherever manual control left off.
+
 ---
 
 ## 5. Update Cycle (Worker Loop)
@@ -165,7 +197,8 @@ loop continues (optionally printing a traceback in debug mode).
    yet connected, otherwise refresh the device list.
 2. **Read lux** from the sensor (may be null).
 3. **Filter** the reading through lux hysteresis (§4.2) → `effective_lux`.
-4. **Compute raw target** brightness from `effective_lux` (§4.1).
+4. **Compute raw target** brightness: if `manual_control` is on, use the manual
+   target (§4.5); otherwise map `effective_lux` (§4.1).
 5. **Enumerate monitors** (§7).
 6. **Branch on monitor availability:**
 
@@ -186,7 +219,9 @@ loop continues (optionally printing a traceback in debug mode).
    - **Monitors found:**
      - Increment a success counter, reset the failure counter, and record this
        list as the last-known-good list with a timestamp.
-     - Compute the **smoothed/applied** target (§4.3).
+     - Compute the **applied** target: under manual control use the raw target
+       directly (no smoothing, §4.5) and keep `smoothed_brightness` synced to it;
+       otherwise compute the **smoothed/applied** target (§4.3).
      - Prune the "last sent value" cache (§5.1) to only currently-present
        handles.
      - For each monitor, build a display line (name, current %, raw value,
@@ -312,43 +347,69 @@ DDC/CI over I²C on Linux/macOS).
 
 ## 8. Graphical User Interface
 
-A single resizable window titled "Brightness Dimmer" (or equivalent). It exposes
-every tunable parameter and shows live status. The UI runs on the main thread;
-the worker runs separately and communicates only through the shared, locked
-state.
+A single resizable, scrollable window titled "AutoBright" (or equivalent),
+organized as a vertical stack of cards: a header, a live readout, a **Manual
+override** card, a **Settings** card, and a **Monitors** card. Where the platform
+supports it the window uses a translucent (Mica) backdrop, falling back to a
+solid background otherwise. The UI runs on the main thread; the worker runs
+separately and communicates only through the shared, locked state.
+
+There is **no explicit Save/Apply button** — every editable control auto-commits
+(validating and persisting) as described in §8.4.
 
 ### 8.1 Input controls (editable fields)
 
-Text/number entry fields for: **Min lux**, **Max lux**, **Min brightness (%)**,
-**Max brightness (%)**, **Update rate (s)**, **Max change rate (%/s)**, **Lux
-hysteresis**. A checkbox **"Minimize to tray on close"**.
+- **Settings card** — numeric entry fields for **Min lux**, **Max lux**, **Min
+  brightness (%)**, **Max brightness (%)**, **Update rate (s)**, **Max change
+  rate (%/s)**, **Lux hysteresis**, and a checkbox **"Minimize to tray on
+  close"**. A status line beneath the fields shows save/validation feedback
+  (§8.4).
+- **Manual override card** — a checkbox **"Manual brightness control"** that
+  reveals, when enabled: a checkbox **"Use absolute 0–100% range (ignore
+  configured min/max)"** (`manual_absolute`), a three-way **Min / Max / Manual**
+  radio group (`manual_mode`), and a **slider** with a live percentage label
+  (`manual_brightness`, enabled only in `manual` mode). The slider's range is the
+  absolute 0–100% when `manual_absolute` is set, otherwise the configured
+  `min_brightness`–`max_brightness` band, and the current value is clamped into
+  that range whenever the range changes. When manual control is first switched
+  on, the slider is seeded with the brightness currently being driven so there is
+  no visible jump.
 
-### 8.2 Buttons
+Some persisted parameters are **not** surfaced as GUI controls and are set only
+via CLI/settings: `show_lux`, `start_minimized`, and `remote_hub`.
 
-- **Apply** — validate and commit all entry-field values (see §8.4), then save
-  settings.
+### 8.2 Buttons (Monitors card)
+
 - **Refresh monitors** — force a full monitor re-enumeration.
 - **Reconnect sensor** — force the sensor to drop and re-register next cycle.
 - **Hide to tray** — hide the window to the notification area.
 
 ### 8.3 Live status display (refreshed ~ every 500 ms)
 
-- **Current lux**: shows the value (e.g. `Current lux: 142.50`) when `show_lux`
-  is enabled; shows `hidden` when disabled; `n/a` when unavailable.
-- **Target brightness**: e.g. `Target brightness: 73%` or `n/a`.
-- **Monitor list / status box**: a multi-line list whose first line is the
-  current status message (concatenated with `last_error` if present), a
-  separator, then one line per monitor describing current %, raw value, and
-  hardware range, plus per-cycle action annotations ("set to N%", "unchanged",
-  "failed to set brightness", "last known current…").
+- **Current lux**: shows the value (e.g. `142.5`) when `show_lux` is enabled;
+  shows `hidden` when disabled; `n/a` when unavailable.
+- **Target brightness**: e.g. `73%` or `n/a`.
+- **Worker status line**: the current monitor status message, with `last_error`
+  appended (after a separator) when present; rendered in an error colour when an
+  error is shown.
+- **Monitor list**: a scrollable, monospaced list with one line per monitor
+  describing current %, raw value, and hardware range, plus per-cycle action
+  annotations ("set to N%", "unchanged at N%", "failed to set brightness", "last
+  known current…"). The list is updated in place (matching lines are left
+  untouched) so it does not flicker or lose scroll position between refreshes.
 
-The UI refresh reads a snapshot of the shared state under the lock and
-re-schedules itself while the app is running.
+The UI refresh reads a snapshot of the shared state under the lock and runs on a
+repeating timer while the app is running.
 
-### 8.4 Input validation (on Apply)
+### 8.4 Input validation and auto-commit
 
-All fields must parse as numbers (lux/rate/hysteresis as floats, brightness as
-integers); otherwise show an error dialog and abort the apply. Then enforce:
+Editable controls commit automatically: text entries on **Enter/Completed** and
+on **focus loss**; the tray checkbox, manual checkbox, radios, and absolute
+checkbox on change; the manual slider applies **live** while dragging with the
+disk write **debounced** (~400 ms) until the drag settles.
+
+On each commit, all fields are validated **as a set**. Every numeric field must
+parse (lux/rate/hysteresis as floats, brightness as integers); then enforce:
 
 - `min_lux < max_lux`
 - both brightness values within 0–100, and `min_brightness < max_brightness`
@@ -356,8 +417,11 @@ integers); otherwise show an error dialog and abort the apply. Then enforce:
 - `max_brightness_rate >= 0` (0 disables smoothing)
 - `lux_hysteresis >= 0` (0 disables hysteresis)
 
-On any violation, show a descriptive error dialog and do not apply. On success,
-update the live parameters, persist settings, and set a status message.
+Validation feedback is **inline** (a status label), not a modal dialog. On any
+parse failure or violation the message is shown and the commit is abandoned,
+leaving the previously applied configuration untouched. On success (and only if
+something actually changed) the live parameters are updated, settings are
+persisted, and a "Settings saved." status is shown.
 
 ### 8.5 Startup validation / auto-correction
 
@@ -397,9 +461,18 @@ to a default system icon.
   user's home directory). The directory is created if missing.
 - **Load** at startup: read the file if present; on any error, fall back to
   empty/defaults (never crash).
-- **Save** writes all parameters from §3.1 plus the current window geometry and
-  the sensor hub URL. Save is triggered on Apply. Save failures are caught and
-  surfaced via `last_error`.
+- **Save** writes all parameters from §3.1 plus the sensor hub URL and the
+  current window geometry. Saving is automatic: it is triggered whenever a
+  setting is committed (§8.4) and, debounced, whenever the window is moved or
+  resized. Save failures are caught and ignored (best-effort); they do not crash
+  the app.
+- **Window geometry** is persisted as an object (`x`, `y`, `width`, `height`)
+  and only captured while the window is in a normal, on-screen state — a
+  minimized/hidden window (which Windows parks near `(-32000, -32000)` with a
+  tiny size) is rejected so a bad rectangle is never written. On restore the
+  saved rectangle is likewise validated and clamped onto a currently-connected
+  display, so a monitor change cannot strand the window off-screen. On first run
+  (no valid saved geometry) a compact default size is used.
 - The full precedence for each parameter at startup is:
   **command-line argument > saved setting > built-in default.**
 
@@ -425,9 +498,13 @@ the saved setting, then the default. Options:
 | `--start-minimized` | flag | `start_minimized` |
 | `--debug` | flag | enable debug logging / tracebacks |
 
-If the sensor library is unavailable at launch, print an informative message
-(how to install the sensor driver and the underlying import error) but continue
-to start the GUI.
+The manual-override parameters (`manual_control`, `manual_mode`,
+`manual_brightness`, `manual_absolute`) are **not** command-line options; they
+are set through the GUI and persisted to settings.
+
+If the sensor library is unavailable at launch, the app continues to start the
+GUI and surfaces the error through `last_error` (producing null lux readings)
+rather than crashing.
 
 ---
 
@@ -465,12 +542,16 @@ The application must keep running through all of the following without crashing:
 
 ## 14. Packaging (informative, non-functional)
 
-The reference app is distributed both as an installable Python package (console
-entry point) and as a single-file, windowed (no console) executable produced by
-a bundler (PyInstaller). The bundle includes the application icon and the
-sensor-vendor native libraries, and declares the sensor modules as hidden
-imports. Any equivalent packaging that produces a self-contained desktop binary
-satisfies this requirement; it is not part of the runtime behaviour.
+The reference app is distributed as an **unpackaged** (no MSIX), windowed
+Windows executable. It is built **self-contained**, bundling both the .NET
+runtime and the Windows App SDK, so it runs on a machine with neither installed.
+The application icon (`icon.ico`) is copied alongside the executable for use as
+the window title-bar and notification-area icon, and the Yoctopuce sensor library
+is referenced as a normal package dependency. Builds target `win-x64` and
+`win-arm64`; the output path is kept stable (no runtime-identifier subfolder) so
+launch/build configurations resolve regardless of host architecture. Any
+equivalent packaging that produces a self-contained desktop binary satisfies this
+requirement; it is not part of the runtime behaviour.
 
 ---
 
@@ -485,8 +566,14 @@ satisfies this requirement; it is not part of the runtime behaviour.
 | Default update interval | 1.0 s |
 | Default max brightness change rate | 25.0 %/s |
 | Default lux hysteresis | 10.0 lux |
+| Default manual control | off |
+| Default manual mode | manual |
+| Default manual brightness | 50 % |
+| Default manual absolute range | off |
 | Monitor-retain grace period | 10.0 s |
 | Stable cycles before publishing monitor list | 2 |
 | UI refresh period | ~500 ms |
+| Settings/geometry save debounce | ~400 ms |
+| Minimum worker sleep (floor on interval) | 0.05 s |
 | Worker-join timeout on shutdown | 2.0 s |
 | Sensor report frequency (if settable) | 60 samples/min |
