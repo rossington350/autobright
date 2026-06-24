@@ -140,6 +140,18 @@
                             <Label Text="Minimize to tray on close" VerticalOptions="Center" />
                         </HorizontalStackLayout>
 
+                        <HorizontalStackLayout Spacing="8">
+                            <CheckBox x:Name="RunAtStartupCheck" VerticalOptions="Center"
+                                      CheckedChanged="OnSettingCommitted" />
+                            <Label Text="Run at Windows startup" VerticalOptions="Center" />
+                        </HorizontalStackLayout>
+
+                        <HorizontalStackLayout Spacing="8">
+                            <CheckBox x:Name="StartMinimizedCheck" VerticalOptions="Center"
+                                      CheckedChanged="OnSettingCommitted" />
+                            <Label Text="Start minimized to tray" VerticalOptions="Center" />
+                        </HorizontalStackLayout>
+
                         <Label x:Name="SettingsStatus" Text="" IsVisible="False"
                                Style="{StaticResource SecondaryText}" />
                     </VerticalStackLayout>

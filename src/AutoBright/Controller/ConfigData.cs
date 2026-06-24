@@ -30,6 +30,7 @@ public sealed class ConfigData
     public bool ShowLux { get; init; }
     public bool MinimizeToTray { get; init; }
     public bool StartMinimized { get; init; }
+    public bool RunAtStartup { get; init; }
     public string RemoteHub { get; init; } = "usb";
 
     // ---- Manual override --------------------------------------------------
@@ -89,6 +90,7 @@ public sealed class ConfigData
             ShowLux = ShowLux,
             MinimizeToTray = MinimizeToTray,
             StartMinimized = StartMinimized,
+            RunAtStartup = RunAtStartup,
             RemoteHub = RemoteHub,
             ManualControl = ManualControl,
             ManualMode = ManualMode,

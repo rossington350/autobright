@@ -3,6 +3,9 @@ bin/
 obj/
 *.user
 
+# Build artifacts (publish staging, installer output)
+artifacts/
+
 # Local tooling / editor
 .claude/
 .vs/

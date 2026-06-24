@@ -101,6 +101,11 @@ from wherever manual left off.
   right-click → **Exit** to quit.
 - Tick **Minimize to tray on close** so the window's close button hides instead
   of quitting.
+- Tick **Run at Windows startup** to launch AutoBright automatically when you log
+  in (a per-user `HKCU\…\Run` entry, no admin rights needed).
+- Tick **Start minimized to tray** so the app starts hidden in the notification
+  area. When combined with **Run at Windows startup**, AutoBright launches at
+  login straight to the tray (the startup entry adds `--start-minimized`).
 
 ### Buttons
 
@@ -177,19 +182,56 @@ dotnet run   --project src/AutoBright/AutoBright.csproj
 The host architecture is detected automatically, so no `-r` flag is needed for a
 local build. In Visual Studio, open `AutoBright.slnx` and press F5.
 
-### Publish a self-contained executable
+### Publish
+
+There are two deployment shapes, depending on whether the .NET runtime is
+bundled:
 
 ```powershell
-# x64
+# Self-contained — bundles the .NET runtime + Windows App SDK (~240 MB, runs on
+# a machine with neither installed). The csproj defaults to this.
 dotnet publish src/AutoBright/AutoBright.csproj -c Release -r win-x64
 
-# ARM64
-dotnet publish src/AutoBright/AutoBright.csproj -c Release -r win-arm64
+# Framework-dependent — bundles only the Windows App SDK; the .NET Desktop
+# Runtime must be installed separately (much smaller). This is what the MSI uses.
+dotnet publish src/AutoBright/AutoBright.csproj -c Release -r win-x64 `
+    --self-contained false -p:WindowsAppSDKSelfContained=true
 ```
 
-The result bundles the .NET runtime and the Windows App SDK, so it runs on a
-machine with neither installed. Look for `AutoBright.exe` under
-`src/AutoBright/bin/Release/net10.0-windows10.0.19041.0/<rid>/publish/`.
+Output lands under `src/AutoBright/bin/Release/net10.0-windows10.0.19041.0/<rid>/publish/`.
+
+> Note: the plain **build** output (`bin/Release/<tfm>/AutoBright.exe`, no
+> `publish` folder) is always framework-dependent, so running it on a machine
+> without the .NET Desktop Runtime shows a "download the runtime" prompt. That's
+> expected — use a published build for distribution.
+
+### Build the MSI installer
+
+The installer is a framework-dependent build wrapped in an MSI. It does **not**
+bundle the .NET runtime (keeping it small) but **recognises it as a dependency**:
+if the .NET Desktop Runtime is missing, the installer stops and points the user
+to the download.
+
+```powershell
+# From the repo root — publishes framework-dependent, then builds the MSI
+./build-installer.ps1                 # version 1.0.0.0
+./build-installer.ps1 -Version 1.1.0.0
+```
+
+Only the .NET SDK is required; the WiX build tooling is restored from NuGet
+automatically. The resulting `AutoBright-<version>-win-x64.msi` is written under
+`installer/bin/Release/`. It runs a setup wizard (welcome/license → progress →
+a **"Setup completed" dialog** with a Finish button), installs to
+`Program Files\AutoBright`, adds a Start Menu shortcut, and appears in Add/Remove
+Programs.
+
+The installer sources live in [installer/](installer/):
+`Package.wxs` (WiX authoring), `AutoBright.Installer.wixproj` (WiX SDK project),
+and `License.rtf` (the GPL notice shown on the welcome page). The runtime
+dependency is detected by checking for
+`%ProgramFiles%\dotnet\shared\Microsoft.WindowsDesktop.App`; end users install
+the runtime from <https://dotnet.microsoft.com/download/dotnet/10.0> (the x64
+**.NET Desktop Runtime**).
 
 ---
 

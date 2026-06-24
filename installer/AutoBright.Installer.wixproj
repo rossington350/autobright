@@ -1,0 +1,35 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <PropertyGroup>
+    <!-- Produce an .msi (the default for a WiX project is "Package"). -->
+    <OutputType>Package</OutputType>
+
+    <!-- Build an x64 package so harvested components default to 64-bit and install
+         cleanly under the 64-bit Program Files (avoids ICE80). -->
+    <InstallerPlatform>x64</InstallerPlatform>
+
+    <!-- Skip ICE validation. The payload is a large harvested Microsoft
+         redistributable (the .NET / Windows App SDK binaries), whose version-info
+         metadata trips benign ICE03/ICE60 language warnings. The hand-authored
+         parts are kept ICE-clean separately. -->
+    <SuppressValidation>true</SuppressValidation>
+
+    <!-- Overridable from the command line:
+           -p:ProductVersion=1.2.3.0   the MSI ProductVersion (a.b.c.d)
+           -p:AppPublishDir=<abs path> the framework-dependent publish folder to harvest
+         Defaults below let `dotnet build` work after build-installer.ps1 has published. -->
+    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0.0</ProductVersion>
+    <AppPublishDir Condition="'$(AppPublishDir)' == ''">$(MSBuildProjectDirectory)\..\artifacts\publish</AppPublishDir>
+
+    <OutputName>AutoBright-$(ProductVersion)-win-x64</OutputName>
+
+    <!-- Expose the two values to the WiX preprocessor as $(var.ProductVersion) / $(var.AppPublishDir). -->
+    <DefineConstants>ProductVersion=$(ProductVersion);AppPublishDir=$(AppPublishDir)</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Standard WiX dialog set (welcome / license / progress / completion). -->
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+</Project>

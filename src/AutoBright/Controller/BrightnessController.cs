@@ -59,6 +59,7 @@ public sealed class BrightnessController
             ShowLux = options.ShowLux ?? settings.ShowLux,
             MinimizeToTray = options.MinimizeToTray ?? settings.MinimizeToTray,
             StartMinimized = options.StartMinimized ?? settings.StartMinimized,
+            RunAtStartup = settings.RunAtStartup,
             RemoteHub = options.RemoteHub ?? (string.IsNullOrWhiteSpace(settings.RemoteHub) ? "usb" : settings.RemoteHub),
             ManualControl = settings.ManualControl,
             ManualMode = settings.ManualMode,

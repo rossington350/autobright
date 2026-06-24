@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <!--
+    AutoBright MSI installer.
+
+    The .NET Desktop Runtime is intentionally NOT bundled (the harvested payload is
+    a framework-dependent publish: the app + the Windows App SDK, but not the .NET
+    runtime). Instead the installer recognises the runtime as a prerequisite: it
+    checks whether the Microsoft.WindowsDesktop.App shared framework is installed
+    and, if it is entirely absent, blocks the install with guidance to install it.
+  -->
+  <Package Name="AutoBright"
+           Manufacturer="rossington350"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="7C9E1A42-5B3D-4E08-9F6A-1D2B3C4E5F60"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <SummaryInformation Description="AutoBright - automatic monitor brightness" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Add/Remove Programs metadata -->
+    <Icon Id="AutoBrightIcon" SourceFile="..\src\AutoBright\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AutoBrightIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/rossington350/autobright" />
+
+    <!-- ===== .NET Desktop Runtime dependency check ===========================
+         Walk %ProgramFiles%\dotnet\shared\Microsoft.WindowsDesktop.App. If the
+         leaf directory exists, a Windows Desktop runtime is present and the
+         property is set; otherwise it stays empty and the launch condition fails.
+         (`Installed` keeps repair/modify/uninstall working when the runtime check
+         would otherwise re-evaluate.) -->
+    <Property Id="DOTNETDESKTOPRUNTIME">
+      <DirectorySearch Id="DotNetRoot" Path="[ProgramFiles64Folder]dotnet">
+        <DirectorySearch Id="DotNetShared" Path="shared">
+          <DirectorySearch Id="DotNetWindowsDesktopApp" Path="Microsoft.WindowsDesktop.App" />
+        </DirectorySearch>
+      </DirectorySearch>
+    </Property>
+
+    <Launch Condition="Installed OR DOTNETDESKTOPRUNTIME"
+            Message="AutoBright requires the .NET Desktop Runtime 10.0 (x64), which was not found. Install it from https://dotnet.microsoft.com/download/dotnet/10.0 (choose the x64 &quot;.NET Desktop Runtime&quot; installer), then run this installer again." />
+
+    <!-- ===== Setup wizard UI ==============================================
+         WixUI_Minimal: a welcome/license page, a progress page, and a final
+         "Setup completed" dialog (Finish button) confirming the install is done. -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+    <!-- ===== Install locations ============================================== -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="AutoBright" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppShortcutFolder" Name="AutoBright" />
+    </StandardDirectory>
+
+    <!-- ===== Payload ======================================================== -->
+    <Feature Id="Main" Title="AutoBright" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="AppShortcut" />
+    </Feature>
+
+    <!-- Harvest the entire framework-dependent publish folder into INSTALLFOLDER.
+         AutoBright.exe lands at INSTALLFOLDER\AutoBright.exe. -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <!-- Components default to 64-bit because the package is built x64
+           (InstallerPlatform in the .wixproj), so they install cleanly under the
+           64-bit Program Files. -->
+      <Files Include="$(var.AppPublishDir)\**" />
+    </ComponentGroup>
+
+    <!-- Start Menu shortcut to the installed executable. -->
+    <Component Id="AppShortcut" Directory="AppShortcutFolder" Bitness="always64"
+               Guid="3A8F1B92-6C4D-4E27-8B5A-9D0E1F2A3B4C">
+      <Shortcut Id="AutoBrightStartMenuShortcut"
+                Name="AutoBright"
+                Description="Automatic monitor brightness"
+                Target="[INSTALLFOLDER]AutoBright.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AutoBrightIcon" />
+      <RemoveFolder Id="RemoveAppShortcutFolder" On="uninstall" />
+      <!-- Non-advertised shortcut components key off an HKCU value (per-user
+           self-heal), which is the standard pattern even in a perMachine package. -->
+      <RegistryValue Root="HKCU" Key="Software\rossington350\AutoBright"
+                     Name="installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+  </Package>
+</Wix>

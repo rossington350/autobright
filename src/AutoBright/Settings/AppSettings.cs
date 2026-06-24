@@ -31,6 +31,7 @@ public sealed class AppSettings
     public bool ShowLux { get; set; }
     public bool MinimizeToTray { get; set; }
     public bool StartMinimized { get; set; }
+    public bool RunAtStartup { get; set; }
     public string RemoteHub { get; set; } = "usb";
     public bool ManualControl { get; set; }
     public ManualMode ManualMode { get; set; } = ManualMode.Manual;

@@ -91,6 +91,10 @@ public partial class MainPage : ContentPage
         _uiTimer.Tick += (_, _) => RefreshUi();
         _uiTimer.Start();
 
+        // Keep the Windows "run at startup" entry in sync with the saved setting
+        // and the current executable path (handles a moved/reinstalled exe).
+        StartupManager.Apply(_controller.Config.RunAtStartup, _controller.Config.StartMinimized);
+
         if (_controller.Config.StartMinimized)
         {
             HideToTray();
@@ -202,6 +206,8 @@ public partial class MainPage : ContentPage
         MaxRateBox.Text = cfg.MaxBrightnessRate.ToString(CultureInfo.InvariantCulture);
         HysteresisBox.Text = cfg.LuxHysteresis.ToString(CultureInfo.InvariantCulture);
         TrayCheck.IsChecked = cfg.MinimizeToTray;
+        RunAtStartupCheck.IsChecked = cfg.RunAtStartup;
+        StartMinimizedCheck.IsChecked = cfg.StartMinimized;
 
         AbsoluteCheck.IsChecked = cfg.ManualAbsolute;
         ManualCheck.IsChecked = cfg.ManualControl;
@@ -246,6 +252,7 @@ public partial class MainPage : ContentPage
         }
 
         _controller.ApplyConfig(updated);
+        StartupManager.Apply(updated.RunAtStartup, updated.StartMinimized);
         SaveSettings();
         SetSettingsStatus("Settings saved.", error: false);
 
@@ -301,7 +308,8 @@ public partial class MainPage : ContentPage
             LuxHysteresis = hysteresis,
             ShowLux = previous.ShowLux,
             MinimizeToTray = TrayCheck.IsChecked,
-            StartMinimized = previous.StartMinimized,
+            StartMinimized = StartMinimizedCheck.IsChecked,
+            RunAtStartup = RunAtStartupCheck.IsChecked,
             RemoteHub = previous.RemoteHub,
             ManualControl = ManualCheck.IsChecked,
             ManualMode = GetSelectedManualMode(),
@@ -333,6 +341,8 @@ public partial class MainPage : ContentPage
         && a.MaxBrightnessRate == b.MaxBrightnessRate
         && a.LuxHysteresis == b.LuxHysteresis
         && a.MinimizeToTray == b.MinimizeToTray
+        && a.StartMinimized == b.StartMinimized
+        && a.RunAtStartup == b.RunAtStartup
         && a.ManualControl == b.ManualControl
         && a.ManualMode == b.ManualMode
         && a.ManualBrightness == b.ManualBrightness
@@ -592,6 +602,7 @@ public partial class MainPage : ContentPage
             ShowLux = cfg.ShowLux,
             MinimizeToTray = cfg.MinimizeToTray,
             StartMinimized = cfg.StartMinimized,
+            RunAtStartup = cfg.RunAtStartup,
             RemoteHub = cfg.RemoteHub,
             ManualControl = cfg.ManualControl,
             ManualMode = cfg.ManualMode,
