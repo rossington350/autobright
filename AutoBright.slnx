@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/AutoBright/AutoBright.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AutoBright.Tests/AutoBright.Tests.csproj" />
+  </Folder>
 </Solution>

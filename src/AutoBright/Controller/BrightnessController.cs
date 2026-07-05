@@ -130,7 +130,7 @@ public sealed class BrightnessController
     /// The target brightness while manual control is active. Min/Max reuse the
     /// configured brightness limits; Manual uses the slider value.
     /// </summary>
-    private static int ManualTarget(ConfigData cfg) => cfg.ManualMode switch
+    internal static int ManualTarget(ConfigData cfg) => cfg.ManualMode switch
     {
         ManualMode.Max => cfg.ManualAbsolute ? 100 : cfg.MaxBrightness,
         ManualMode.Min => cfg.ManualAbsolute ? 0 : cfg.MinBrightness,
@@ -139,7 +139,7 @@ public sealed class BrightnessController
             : Math.Max(cfg.MinBrightness, Math.Min(cfg.MaxBrightness, cfg.ManualBrightness)),
     };
 
-    private static int? ComputeBrightness(ConfigData cfg, double? luxValue)
+    internal static int? ComputeBrightness(ConfigData cfg, double? luxValue)
     {
         if (luxValue is not double lux)
         {
@@ -164,7 +164,7 @@ public sealed class BrightnessController
         return Math.Max(cfg.MinBrightness, Math.Min(cfg.MaxBrightness, rounded));
     }
 
-    private double? ApplyLuxHysteresis(ConfigData cfg, double? luxValue)
+    internal double? ApplyLuxHysteresis(ConfigData cfg, double? luxValue)
     {
         if (luxValue is not double lux)
         {
@@ -181,7 +181,7 @@ public sealed class BrightnessController
         return _effectiveLux;
     }
 
-    private int? SmoothBrightness(ConfigData cfg, int? target)
+    internal int? SmoothBrightness(ConfigData cfg, int? target)
     {
         if (target is not int targetValue)
         {
@@ -205,7 +205,7 @@ public sealed class BrightnessController
         return (int)Math.Round(_smoothedBrightness.Value, MidpointRounding.AwayFromZero);
     }
 
-    private static int? PercentToMonitorValue(MonitorInfo monitor, int? brightnessPercent)
+    internal static int? PercentToMonitorValue(MonitorInfo monitor, int? brightnessPercent)
     {
         if (brightnessPercent is not int percent)
         {
@@ -221,7 +221,7 @@ public sealed class BrightnessController
         return (int)Math.Round(raw, MidpointRounding.AwayFromZero);
     }
 
-    private static int MonitorValueToPercent(MonitorInfo monitor, int value)
+    internal static int MonitorValueToPercent(MonitorInfo monitor, int value)
     {
         if (monitor.MaxBrightness <= monitor.MinBrightness)
         {

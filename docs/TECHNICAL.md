@@ -30,6 +30,7 @@ byte-for-byte-equivalent application.
 | Monitor control | Win32 DDC/CI via `dxva2.dll` + `user32.dll` (P/Invoke) |
 | Tray icon | Win32 `Shell_NotifyIcon` + window subclassing (`comctl32.dll`) |
 | Settings format | JSON, snake_case keys |
+| Unit testing | xUnit 2.9, `tests/AutoBright.Tests` (net10.0-windows10.0.19041.0, `ProjectReference` to the app) |
 
 The app is **Windows-only by design**: DDC/CI, the Yoctopuce USB sensor, the
 notification-area icon, and Mica all bind to Windows APIs. There is therefore a
@@ -49,39 +50,50 @@ autobright/
 │  ├─ AutoBright.Installer.wixproj       # WiX SDK project (x64, restores WiX from NuGet)
 │  ├─ Package.wxs                       # WiX authoring (payload, shortcut, runtime check, UI)
 │  └─ License.rtf                       # GPL notice shown on the welcome page
-└─ src/
-   └─ AutoBright/
-      ├─ AutoBright.csproj
-      ├─ icon.ico                       # runtime title-bar + tray icon (Content, copied to output)
-      ├─ App.xaml / App.xaml.cs         # MAUI Application; creates the single window
-      ├─ MauiProgram.cs                 # MauiApp builder (fonts, logging)
-      ├─ MainPage.xaml / MainPage.xaml.cs   # the one and only page + all UI logic
-      ├─ CommandLineOptions.cs          # CLI parsing
-      ├─ StartupManager.cs              # per-user "run at OS startup" registry entry (§17)
-      ├─ TrayIcon.cs                    # Win32 notification-area icon
-      ├─ Controller/
-      │  ├─ BrightnessController.cs      # worker thread, mapping/smoothing, orchestration
-      │  ├─ ConfigData.cs               # immutable config snapshot + ManualMode enum
-      │  └─ AppState.cs                 # mutable runtime state shared worker→UI
-      ├─ Hardware/
-      │  ├─ MonitorManager.cs            # DDC/CI enumerate/read/write/cleanup
-      │  └─ YoctoSensorManager.cs        # Yoctopuce hub/sensor lifecycle + lux reads
-      ├─ Settings/
-      │  └─ AppSettings.cs              # JSON load/save + window geometry struct
-      ├─ Resources/
-      │  ├─ AppIcon/  Splash/  Images/  Fonts/  Raw/   # standard MAUI resources
-      │  └─ Styles/
-      │     ├─ Colors.xaml  Styles.xaml  # MAUI template defaults
-      │     └─ AppStyles.xaml           # app-specific colours + Card/Stat/Field styles
-      └─ Platforms/
-         └─ Windows/
-            ├─ App.xaml / App.xaml.cs   # MauiWinUIApplication (namespace AutoBright.WinUI)
-            └─ (manifest, etc.)
+├─ src/
+│  └─ AutoBright/
+│     ├─ AutoBright.csproj
+│     ├─ AssemblyInfo.cs              # [InternalsVisibleTo("AutoBright.Tests")] (§19)
+│     ├─ icon.ico                       # runtime title-bar + tray icon (Content, copied to output)
+│     ├─ App.xaml / App.xaml.cs         # MAUI Application; creates the single window
+│     ├─ MauiProgram.cs                 # MauiApp builder (fonts, logging)
+│     ├─ MainPage.xaml / MainPage.xaml.cs   # the one and only page + all UI logic
+│     ├─ CommandLineOptions.cs          # CLI parsing
+│     ├─ StartupManager.cs              # per-user "run at OS startup" registry entry (§17)
+│     ├─ TrayIcon.cs                    # Win32 notification-area icon
+│     ├─ Controller/
+│     │  ├─ BrightnessController.cs      # worker thread, mapping/smoothing, orchestration
+│     │  ├─ ConfigData.cs               # immutable config snapshot + ManualMode enum
+│     │  └─ AppState.cs                 # mutable runtime state shared worker→UI
+│     ├─ Hardware/
+│     │  ├─ MonitorManager.cs            # DDC/CI enumerate/read/write/cleanup
+│     │  └─ YoctoSensorManager.cs        # Yoctopuce hub/sensor lifecycle + lux reads
+│     ├─ Settings/
+│     │  └─ AppSettings.cs              # JSON load/save + window geometry struct
+│     ├─ Resources/
+│     │  ├─ AppIcon/  Splash/  Images/  Fonts/  Raw/   # standard MAUI resources
+│     │  └─ Styles/
+│     │     ├─ Colors.xaml  Styles.xaml  # MAUI template defaults
+│     │     └─ AppStyles.xaml           # app-specific colours + Card/Stat/Field styles
+│     └─ Platforms/
+│        └─ Windows/
+│           ├─ App.xaml / App.xaml.cs   # MauiWinUIApplication (namespace AutoBright.WinUI)
+│           └─ (manifest, etc.)
+└─ tests/
+   └─ AutoBright.Tests/                 # xUnit project, ProjectReference → src/AutoBright (§19)
+      ├─ AutoBright.Tests.csproj
+      ├─ ConfigFactory.cs               # test-only ConfigData builder (bypasses Normalized())
+      ├─ ConfigDataTests.cs             # Normalized() auto-correction rules
+      ├─ CommandLineOptionsTests.cs     # CLI parsing
+      ├─ AppStateTests.cs               # AppState defaults + Clone()
+      ├─ AppSettingsTests.cs            # JSON load/save round-trip, snake_case, corrupt-file fallback
+      ├─ BrightnessMathTests.cs         # stateless mapping helpers (§6.4)
+      └─ BrightnessStatefulTests.cs     # stateful hysteresis/smoothing helpers (§6.4)
 ```
 
 Namespaces: root is `AutoBright`. Sub-namespaces mirror folders
 (`AutoBright.Controller`, `AutoBright.Hardware`, `AutoBright.Settings`). The
-Windows head uses `AutoBright.WinUI`.
+Windows head uses `AutoBright.WinUI`. Tests live in `AutoBright.Tests`.
 
 ---
 
@@ -325,7 +337,12 @@ void RequestReconnectSensor();             // set flag, set LastError "Sensor re
 
 ### 6.4 Algorithms (pure helpers)
 
-**Manual target** — `ManualTarget(ConfigData cfg) → int`:
+These helpers are `internal` (not `private`) so `tests/AutoBright.Tests` can
+call them directly via `[InternalsVisibleTo("AutoBright.Tests")]`
+(`src/AutoBright/AssemblyInfo.cs`, §19) — prefer this over reflection-based
+testing when adding new pure logic here.
+
+**Manual target** — `internal static int ManualTarget(ConfigData cfg)`:
 
 ```
 Max  → ManualAbsolute ? 100 : MaxBrightness
@@ -334,7 +351,7 @@ else → ManualAbsolute ? clamp(ManualBrightness, 0, 100)
                       : clamp(ManualBrightness, MinBrightness, MaxBrightness)
 ```
 
-**Lux→brightness** — `ComputeBrightness(cfg, double? lux) → int?`:
+**Lux→brightness** — `internal static int? ComputeBrightness(cfg, double? lux)`:
 
 ```
 lux == null            → null
@@ -345,7 +362,7 @@ else  result = MinBrightness + (lux - MinLux) * (MaxBrightness - MinBrightness) 
       return clamp(round(result, AwayFromZero), MinBrightness, MaxBrightness)
 ```
 
-**Lux hysteresis** — `ApplyLuxHysteresis(cfg, double? lux) → double?` (mutates `_effectiveLux`):
+**Lux hysteresis** — `internal double? ApplyLuxHysteresis(cfg, double? lux)` (instance method; mutates `_effectiveLux`):
 
 ```
 lux == null                              → return _effectiveLux            (reuse committed)
@@ -354,7 +371,7 @@ abs(lux - _effectiveLux) >= LuxHysteresis → _effectiveLux = lux             (c
 return _effectiveLux
 ```
 
-**Brightness smoothing (slew-rate)** — `SmoothBrightness(cfg, int? target) → int?` (mutates `_smoothedBrightness`):
+**Brightness smoothing (slew-rate)** — `internal int? SmoothBrightness(cfg, int? target)` (instance method; mutates `_smoothedBrightness`):
 
 ```
 target == null                              → null
@@ -366,7 +383,7 @@ else                  → _smoothedBrightness += (delta > 0 ? +maxStep : -maxSte
 return round(_smoothedBrightness, AwayFromZero)
 ```
 
-**Percent → monitor raw** — `PercentToMonitorValue(MonitorInfo m, int? pct) → int?`:
+**Percent → monitor raw** — `internal static int? PercentToMonitorValue(MonitorInfo m, int? pct)`:
 
 ```
 pct == null                 → null
@@ -375,7 +392,7 @@ m.Max <= m.Min              → clamped              (no usable range: use % dir
 else  raw = m.Min + (clamped/100) * (m.Max - m.Min); return round(raw, AwayFromZero)
 ```
 
-**Monitor raw → percent** — `MonitorValueToPercent(MonitorInfo m, int value) → int`:
+**Monitor raw → percent** — `internal static int MonitorValueToPercent(MonitorInfo m, int value)`:
 
 ```
 m.Max <= m.Min → value
@@ -1101,7 +1118,9 @@ radius), `SectionHeader` (12pt bold, CharacterSpacing 1, secondary colour),
 10. Verify against the behavioural contract in SPECIFICATION.md, especially the
     resilience requirements (sensor absent, monitors lost, write failures, worker
     exceptions — all non-fatal).
-11. (Optional, for distribution) Build the WiX MSI (§18) via `build-installer.ps1`.
+11. Add the `tests/AutoBright.Tests` xUnit project (§19) and confirm
+    `dotnet test tests/AutoBright.Tests/AutoBright.Tests.csproj` passes.
+12. (Optional, for distribution) Build the WiX MSI (§18) via `build-installer.ps1`.
 
 ---
 
@@ -1189,3 +1208,46 @@ Only the .NET SDK is needed; the WiX SDK is restored from NuGet by `dotnet build
   (standard non-advertised-shortcut pattern), with `RemoveFolder` on uninstall.
 
 Output: `installer/bin/Release/AutoBright-<version>-win-x64.msi`.
+
+---
+
+## 19. Unit Tests — `tests/AutoBright.Tests/`
+
+`tests/AutoBright.Tests` is an xUnit v2 project (`xunit`, `xunit.runner.visualstudio`,
+`Microsoft.NET.Test.Sdk`), targeting the same `net10.0-windows10.0.19041.0` TFM as
+the app and referencing it via `<ProjectReference>`. It is wired into
+`AutoBright.slnx` under a `/tests/` solution folder.
+
+It covers the platform-independent, deterministic logic — the pieces that don't
+require real DDC/CI monitors or a Yoctopuce sensor to exercise:
+
+| Test file | Covers |
+|---|---|
+| `ConfigDataTests.cs` | `ConfigData.Normalized()` auto-correction rules (§5.2) |
+| `CommandLineOptionsTests.cs` | `CommandLineOptions.Parse()` (§11) — aliases, flags, malformed/missing values, unknown options |
+| `AppStateTests.cs` | `AppState` defaults and `Clone()`'s deep copy of `MonitorList` (§5.3) |
+| `AppSettingsTests.cs` | `AppSettings.Save()`/`Load()` JSON round-trip, snake_case keys, enum-as-string, corrupt-file fallback to defaults (§10) |
+| `BrightnessMathTests.cs` | The stateless mapping helpers in §6.4: `ManualTarget`, `ComputeBrightness`, `PercentToMonitorValue`, `MonitorValueToPercent` |
+| `BrightnessStatefulTests.cs` | The stateful helpers in §6.4: `ApplyLuxHysteresis`, `SmoothBrightness` (called against a fresh `BrightnessController` instance per test so state doesn't leak between cases) |
+| `ConfigFactory.cs` | Test-only helper that builds a `ConfigData` directly via object-initializer (bypassing `Normalized()`), since `ConfigData` is a plain sealed class, not a record — `with` expressions aren't available on it |
+
+**Why the §6.4 helpers are `internal`:** they were `private` in the original
+implementation. `src/AutoBright/AssemblyInfo.cs` declares
+`[assembly: InternalsVisibleTo("AutoBright.Tests")]`, and each pure helper
+(`ManualTarget`, `ComputeBrightness`, `ApplyLuxHysteresis`, `SmoothBrightness`,
+`PercentToMonitorValue`, `MonitorValueToPercent`) is `internal` rather than
+`private` so the test project can call it directly instead of via reflection.
+They remain invisible outside the assembly. Keep any new pure logic added to
+`BrightnessController` `internal` for the same reason.
+
+**Not unit-tested:** `MonitorManager` (Win32 DDC/CI P/Invoke, §7) and
+`YoctoSensorManager` (Yoctopuce hub/sensor lifecycle, §8) are thin hardware
+wrappers with no fake/mockable seam in the current design. Don't introduce
+interfaces or mocking abstractions for them speculatively — only if a concrete
+need arises (e.g. an actual regression that can't otherwise be reproduced).
+
+Run the suite with:
+
+```bash
+dotnet test tests/AutoBright.Tests/AutoBright.Tests.csproj
+```

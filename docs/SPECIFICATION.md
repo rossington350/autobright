@@ -609,3 +609,19 @@ declares the runtime dependency is acceptable.
 | Minimum worker sleep (floor on interval) | 0.05 s |
 | Worker-join timeout on shutdown | 2.0 s |
 | Sensor report frequency (if settable) | 60 samples/min |
+
+---
+
+## 16. Verification (informative)
+
+The formulas in §4 (lux→brightness mapping, hysteresis, slew-rate smoothing,
+percent↔hardware-value translation) and the auto-correction rules in §8.5 are
+pure, deterministic functions of their inputs and small, well-defined state.
+Any reimplementation should validate them with an automated unit-test suite
+(worked examples at the clamp boundaries, the hysteresis/smoothing thresholds,
+and the auto-correction edge cases) rather than relying on manual QA alone —
+these are the parts of the app that are cheapest to get subtly wrong (e.g. an
+off-by-one in a clamp, or `>` vs `>=` at a threshold) and cheapest to pin down
+with a test. The sensor and monitor I/O layers (§6, §7) are hardware-bound and
+are exercised through manual/integration testing instead. See TECHNICAL.md §19
+for how the reference implementation's test suite is organized.

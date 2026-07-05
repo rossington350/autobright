@@ -9,4 +9,9 @@ artifacts/
 # Local tooling / editor
 .claude/
 .vs/
+tools/
+claude.md
+
+# for a future project
 docs/TSL2591-Pico.md
+
