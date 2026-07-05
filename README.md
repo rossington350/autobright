@@ -3,6 +3,10 @@
 **Automatic monitor brightness for Windows, driven by a real ambient-light
 sensor.**
 
+This is an experiment to see if Claude Code could produce the whole application 
+without any manual code changes. The only manual edit I've made is to add this 
+paragraph to the README.md file.
+
 AutoBright reads the room's light level from a [Yoctopuce](https://www.yoctopuce.com/)
 USB light sensor and continuously adjusts the brightness of every connected
 monitor over [DDC/CI](https://en.wikipedia.org/wiki/Display_Data_Channel) — so
