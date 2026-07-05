@@ -169,6 +169,11 @@ public sealed class YoctoSensorManager
         return true;
     }
 
+    /// <summary>
+    /// Best-effort only, per the class doc comment: every device call is
+    /// individually wrapped so one failing LED/enumeration step can't stop the
+    /// rest, and a failure here must never surface as a worker-cycle error.
+    /// </summary>
     private static void DisableYoctoLeds()
     {
         try

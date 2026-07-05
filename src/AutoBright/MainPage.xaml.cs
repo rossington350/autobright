@@ -246,7 +246,8 @@ public partial class MainPage : ContentPage
         }
 
         // Nothing actually changed (e.g. focus left an untouched field).
-        if (ConfigEquals(_controller.Config, updated))
+        // ConfigData is a record, so this is field-by-field value equality.
+        if (_controller.Config == updated)
         {
             return;
         }
@@ -331,22 +332,6 @@ public partial class MainPage : ContentPage
         }
         return ManualMode.Manual;
     }
-
-    private static bool ConfigEquals(ConfigData a, ConfigData b) =>
-        a.MinLux == b.MinLux
-        && a.MaxLux == b.MaxLux
-        && a.MinBrightness == b.MinBrightness
-        && a.MaxBrightness == b.MaxBrightness
-        && a.Interval == b.Interval
-        && a.MaxBrightnessRate == b.MaxBrightnessRate
-        && a.LuxHysteresis == b.LuxHysteresis
-        && a.MinimizeToTray == b.MinimizeToTray
-        && a.StartMinimized == b.StartMinimized
-        && a.RunAtStartup == b.RunAtStartup
-        && a.ManualControl == b.ManualControl
-        && a.ManualMode == b.ManualMode
-        && a.ManualBrightness == b.ManualBrightness
-        && a.ManualAbsolute == b.ManualAbsolute;
 
     private void SetSettingsStatus(string message, bool error)
     {
@@ -455,7 +440,7 @@ public partial class MainPage : ContentPage
         }
 
         // Apply live for responsive feedback; debounce the disk write.
-        if (TryBuildConfig(out ConfigData updated) && !ConfigEquals(_controller.Config, updated))
+        if (TryBuildConfig(out ConfigData updated) && _controller.Config != updated)
         {
             _controller.ApplyConfig(updated);
         }

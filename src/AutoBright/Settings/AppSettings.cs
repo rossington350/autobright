@@ -82,12 +82,18 @@ public sealed class AppSettings
         return new AppSettings();
     }
 
-    /// <summary>Save settings. Throws on failure so callers can surface the error.</summary>
+    /// <summary>
+    /// Save settings. Throws on failure so callers can surface the error. Writes
+    /// to a temp file first and renames it over the real path so a crash or
+    /// power loss mid-write can never leave a truncated/corrupt settings.json.
+    /// </summary>
     public void Save()
     {
         string path = GetSettingsPath();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         string json = JsonSerializer.Serialize(this, Options);
-        File.WriteAllText(path, json);
+        string tempPath = path + ".tmp";
+        File.WriteAllText(tempPath, json);
+        File.Move(tempPath, path, overwrite: true);
     }
 }

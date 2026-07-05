@@ -485,7 +485,9 @@ launch agent). When disabled, the registration is removed.
   current window geometry. Saving is automatic: it is triggered whenever a
   setting is committed (§8.4) and, debounced, whenever the window is moved or
   resized. Save failures are caught and ignored (best-effort); they do not crash
-  the app.
+  the app. The write itself is atomic (write to a temporary file, then rename
+  it over the real path) so a crash or power loss mid-write can never leave a
+  truncated or corrupt settings file.
 - **Window geometry** is persisted as an object (`x`, `y`, `width`, `height`)
   and only captured while the window is in a normal, on-screen state — a
   minimized/hidden window (which Windows parks near `(-32000, -32000)` with a
@@ -530,6 +532,10 @@ rather than crashing.
 
 ## 12. Concurrency and Lifecycle
 
+- **Single instance:** only one instance of the application runs at a time. A
+  second launch attempt detects the first instance and exits immediately
+  without opening a window, so two instances never compete to drive the same
+  monitor hardware or race each other's writes to the settings file.
 - **Two execution contexts:** a UI/main thread and a single background worker
   thread (daemonized so it cannot block process exit). The worker performs all
   sensor reads and monitor writes; the UI only reads shared state and issues

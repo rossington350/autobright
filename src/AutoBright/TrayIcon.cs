@@ -38,6 +38,7 @@ public sealed class TrayIcon
     private readonly Action<string> _callback;
     private readonly SUBCLASSPROC _subclassProc;
     private readonly UIntPtr _subclassId = (UIntPtr)1;
+    private readonly bool _ownsIcon;
     private NOTIFYICONDATAW _data;
     private bool _added;
 
@@ -48,6 +49,9 @@ public sealed class TrayIcon
         _subclassProc = SubclassProc;
         SetWindowSubclass(_hwnd, _subclassProc, _subclassId, UIntPtr.Zero);
 
+        (IntPtr icon, bool owned) = LoadAppIcon();
+        _ownsIcon = owned;
+
         _data = new NOTIFYICONDATAW
         {
             cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATAW>(),
@@ -55,7 +59,7 @@ public sealed class TrayIcon
             uID = 1,
             uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage = CALLBACK_MESSAGE,
-            hIcon = LoadAppIcon(),
+            hIcon = icon,
             szTip = tooltip,
         };
     }
@@ -82,6 +86,12 @@ public sealed class TrayIcon
     {
         try { Hide(); } catch { }
         RemoveWindowSubclass(_hwnd, _subclassProc, _subclassId);
+        // Only destroy an icon we loaded ourselves from icon.ico — the
+        // IDI_APPLICATION fallback is a shared system resource that must not be.
+        if (_ownsIcon && _data.hIcon != IntPtr.Zero)
+        {
+            try { DestroyIcon(_data.hIcon); } catch { }
+        }
     }
 
     private IntPtr SubclassProc(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam, UIntPtr id, UIntPtr refData)
@@ -121,7 +131,12 @@ public sealed class TrayIcon
         }
     }
 
-    private static IntPtr LoadAppIcon()
+    /// <summary>
+    /// Loads the tray icon, indicating whether the returned handle is one we
+    /// privately own (loaded from icon.ico, must be released with DestroyIcon)
+    /// or the shared IDI_APPLICATION system icon (must NOT be destroyed).
+    /// </summary>
+    private static (IntPtr Handle, bool Owned) LoadAppIcon()
     {
         try
         {
@@ -131,7 +146,7 @@ public sealed class TrayIcon
                 IntPtr handle = LoadImageW(IntPtr.Zero, path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
                 if (handle != IntPtr.Zero)
                 {
-                    return handle;
+                    return (handle, true);
                 }
             }
         }
@@ -139,7 +154,7 @@ public sealed class TrayIcon
         {
             // Fall through to the default application icon.
         }
-        return LoadIconW(IntPtr.Zero, (IntPtr)IDI_APPLICATION);
+        return (LoadIconW(IntPtr.Zero, (IntPtr)IDI_APPLICATION), false);
     }
 
     // ---- Win32 interop ----------------------------------------------------
@@ -211,4 +226,7 @@ public sealed class TrayIcon
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr LoadIconW(IntPtr hInstance, IntPtr lpIconName);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 }

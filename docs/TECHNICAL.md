@@ -221,9 +221,11 @@ absolute) minimum/maximum.
 
 ### 5.2 `ConfigData` — immutable config snapshot
 
-`sealed class` with `init`-only auto-properties. A new instance is published on
-every change; the worker reads one reference per cycle, so updates are lock-free
-and atomic.
+`sealed record` with `init`-only auto-properties (a record, not a plain class,
+so MainPage gets correct field-by-field value equality — `==`/`!=` — for free,
+instead of a hand-rolled comparer; see §13.5). A new instance is published on
+every change; the worker reads one reference per cycle, so updates are
+lock-free and atomic.
 
 | Property | Type | Default |
 |---|---|---|
@@ -245,17 +247,23 @@ and atomic.
 | `ManualAbsolute` | bool | false |
 
 **`ConfigData Normalized()`** returns a corrected copy (used at construction and
-whenever a config is applied). Rules:
+whenever a config is applied). Rules, in order:
 
-- `if (MinLux >= MaxLux) maxLux = MinLux + 1.0;`
-- `if (MinBrightness >= MaxBrightness) maxBrightness = min(100, MinBrightness + 1);`
+- `if (MinLux >= MaxLux) maxLux = MinLux + 1.0;` (`MinLux` itself is not altered)
+- `minBrightness = clamp(MinBrightness, 0, 100); maxBrightness = clamp(MaxBrightness, 0, 100);`
+  — enforces the documented 0–100 domain, not just the ordering below, so a
+  hand-edited or corrupted settings file can't carry an out-of-range brightness
+  value past this point.
+- `if (minBrightness >= maxBrightness) maxBrightness = min(100, minBrightness + 1);`
+  — runs against the already-clamped values, so e.g. `MinBrightness=500,
+  MaxBrightness=50` first clamps to `(100, 50)` and then corrects to `(100, 100)`.
 - `if (Interval <= 0) interval = 1.0;`
 - `if (MaxBrightnessRate < 0) rate = 0.0;`
 - `if (LuxHysteresis < 0) hysteresis = 0.0;`
 - `manualBrightness = clamp(ManualBrightness, 0, 100);`
 
-`MinBrightness` and `MinLux` are **not** themselves altered — only the dependent
-maxima are pushed up. All other fields pass through unchanged.
+`MinLux` is **not** itself altered — only the dependent maxima are pushed up.
+All other fields pass through unchanged.
 
 ### 5.3 `AppState` — mutable runtime snapshot (`Controller/AppState.cs`)
 
@@ -296,7 +304,6 @@ private Thread? _worker;
 
 private readonly Stopwatch _clock = Stopwatch.StartNew();
 private int _monitorSuccessCount;
-private int _monitorFailureCount;
 private IReadOnlyList<MonitorInfo> _lastGoodMonitors = new List<MonitorInfo>();
 private double _lastGoodMonitorsTime;
 private double? _smoothedBrightness;
@@ -403,7 +410,11 @@ All rounding uses `MidpointRounding.AwayFromZero`.
 
 ### 6.5 Worker loop (`WorkerLoop`)
 
-Runs `while (_running)`. Per iteration:
+The "no monitors" and "monitors found" branches below are each their own
+private method (`HandleNoMonitors`, `HandleMonitorsFound`) rather than inlined
+in `WorkerLoop`, with `PruneLastSentValues` and `DriveMonitor` factored out of
+the latter — purely for readability; the behaviour is identical to inlining
+them. `WorkerLoop` itself runs `while (_running)`. Per iteration:
 
 1. Snapshot `ConfigData cfg = _config;`. Create an empty `AppState updates` and a
    set of `has*` booleans (`hasMonitorList`, `hasMonitorStatus`, `hasTarget`,
@@ -418,8 +429,8 @@ Runs `while (_running)`. Per iteration:
    7. `var monitors = _monitorManager.EnumerateMonitors(forceRefresh);`
    8. **Branch on `monitors.Count`:**
 
-      **No monitors (`== 0`):**
-      - `_monitorFailureCount++; _monitorSuccessCount = 0;`
+      **No monitors (`== 0`)** — `HandleNoMonitors`:
+      - `_monitorSuccessCount = 0;`
       - `now = _clock.Elapsed.TotalSeconds;`
       - If `_lastGoodMonitors.Count > 0 && (now - _lastGoodMonitorsTime) < RetainMonitorTimeout`:
         build display lines from `_lastGoodMonitors` (format below, "last known"),
@@ -430,21 +441,22 @@ Runs `while (_running)`. Per iteration:
       - Set `hasMonitorList = hasMonitorStatus = true`, `updates.TargetBrightness = rawTarget; hasTarget = true`.
       - **Do not touch `_smoothedBrightness`** (so ramping resumes from last applied value).
 
-      **Monitors found (`> 0`):**
-      - `_monitorSuccessCount++; _monitorFailureCount = 0;`
+      **Monitors found (`> 0`)** — `HandleMonitorsFound`:
+      - `_monitorSuccessCount++;`
       - `_lastGoodMonitors = monitors; _lastGoodMonitorsTime = _clock.Elapsed.TotalSeconds;`
       - Compute `appliedTarget`:
         - If `cfg.ManualControl`: `appliedTarget = rawTarget;` and if `rawTarget is int mv` then `_smoothedBrightness = mv;` (keep baseline synced, **no smoothing**).
         - Else: `appliedTarget = SmoothBrightness(cfg, rawTarget);`
-      - **Prune `_lastSentValues`:** drop every key whose handle is not in the
-        current `monitors` set.
-      - For each monitor, append a status line and (if `appliedTarget is int applied`) drive it:
+      - **`PruneLastSentValues`:** drop every key in `_lastSentValues` whose
+        handle is not in the current `monitors` set.
+      - For each monitor, append a status line and (if `appliedTarget is int applied`) call `DriveMonitor(monitor, applied)`:
         - `targetValue = PercentToMonitorValue(monitor, applied);`
         - if `targetValue is int rawValue`:
           - `lastMatches = _lastSentValues.TryGetValue(handle, out last) && last == rawValue;`
           - **Skip** if `lastMatches && monitor.CurBrightness == rawValue` → line `"  unchanged at {applied}% (raw {rawValue})"`.
           - Else if `_monitorManager.SetBrightness(handle, rawValue)` → `_lastSentValues[handle] = rawValue;` line `"  set to {applied}% (raw {rawValue})"`.
           - Else → `_lastSentValues.Remove(handle);` line `"  failed to set brightness"`.
+          - Else (targetValue is null) → no line appended; unreachable in practice since `applied` is never itself null here.
       - **Publish gating:** only if `_monitorSuccessCount >= MonitorStableCycles`
         set `updates.MonitorList = lines; updates.MonitorStatus = "Monitors adjusted."; hasMonitorList = hasMonitorStatus = true;`
         (this skips a possibly-stale first read at startup).
@@ -505,12 +517,19 @@ void DestroyMonitors();
 `CollectMonitors` enumerates via `EnumDisplayMonitors` with a delegate callback;
 for each `HMONITOR` it gets the physical-monitor count, fetches the
 `PHYSICAL_MONITOR[]`, and for each calls `GetMonitorBrightness`. Monitors that
-fail the brightness query are **silently excluded**. **Hold a field reference to
-the callback delegate** (`_enumProc`) so the GC cannot collect the marshalled
-thunk mid-call.
+fail the brightness query are **silently excluded** from the returned list —
+and their handle is immediately released with a one-element
+`DestroyPhysicalMonitors(1, new[] { ph })` call, since being excluded from the
+cache means nothing else will ever destroy it (an unreleased handle here would
+otherwise leak for the process lifetime). **Hold a field reference to the
+callback delegate** (`_enumProc`) so the GC cannot collect the marshalled thunk
+mid-call.
 
 `RefreshCachedBrightness` re-queries `GetMonitorBrightness` on each cached handle,
-updating `Min/Cur/Max`; handles that no longer respond are dropped.
+updating `Min/Cur/Max`; a handle that no longer responds is dropped from the
+cache and, for the same leak-avoidance reason as above, destroyed on the spot
+via a synthesized single-element `PHYSICAL_MONITOR { hPhysicalMonitor =
+monitor.Handle, szPhysicalMonitorDescription = monitor.Name }`.
 
 `DestroyCachedMonitors` calls `DestroyPhysicalMonitors` on the cached handles and
 clears the cache. Must be invoked on drop, on forced refresh, and at app exit to
@@ -631,7 +650,7 @@ HWND is **subclassed** to receive the icon's mouse messages.
 public TrayIcon(IntPtr hwnd, string tooltip, Action<string> callback);
 public void Show();     // Shell_NotifyIconW(NIM_ADD) once
 public void Hide();     // Shell_NotifyIconW(NIM_DELETE) once
-public void Cleanup();  // Hide() + RemoveWindowSubclass
+public void Cleanup();  // Hide() + RemoveWindowSubclass + DestroyIcon (if owned)
 ```
 
 The callback is invoked with `"restore"` (left double-click or menu Restore) or
@@ -652,9 +671,17 @@ Constructor sets up `SetWindowSubclass(hwnd, SubclassProc, id=1, 0)` and builds 
 correctly), `TrackPopupMenu(TPM_RIGHTBUTTON | TPM_RETURNCMD)`, `DestroyMenu`,
 dispatch the returned command to the callback.
 
-`LoadAppIcon`: try `LoadImageW(0, "<BaseDirectory>/icon.ico", IMAGE_ICON, 0, 0,
-LR_LOADFROMFILE | LR_DEFAULTSIZE)`; on failure fall back to `LoadIconW(0,
-IDI_APPLICATION=32512)`.
+`LoadAppIcon() → (IntPtr Handle, bool Owned)`: try `LoadImageW(0,
+"<BaseDirectory>/icon.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE |
+LR_DEFAULTSIZE)` and return `(handle, true)` on success; on failure fall back
+to `(LoadIconW(0, IDI_APPLICATION=32512), false)`. The `Owned` flag is stored
+as `_ownsIcon` and consulted by `Cleanup()`: a `LoadImageW`-loaded icon is a
+private `HICON` the caller must release with `DestroyIcon`, whereas
+`IDI_APPLICATION` is a shared system icon that must **not** be destroyed.
+`Cleanup()` calls `DestroyIcon(_data.hIcon)` only when `_ownsIcon` is true —
+omitting this originally leaked one icon handle per tray-icon instance (i.e.
+per hide/restore cycle, since `HideToTray()` constructs a fresh `TrayIcon`
+each time).
 
 ### 9.2 Constants & interop
 
@@ -687,6 +714,7 @@ struct NOTIFYICONDATAW {
 [DllImport("user32.dll")]    bool   SetForegroundWindow(IntPtr hWnd);
 [DllImport("user32.dll", CharSet=Unicode)] IntPtr LoadImageW(IntPtr hinst, string name, int type, int cx, int cy, uint load);
 [DllImport("user32.dll", CharSet=Unicode)] IntPtr LoadIconW(IntPtr hInstance, IntPtr lpIconName);
+[DllImport("user32.dll")]                  bool   DestroyIcon(IntPtr hIcon);
 ```
 
 (`POINT` = sequential `int x, y`. Keep a field reference to the `SUBCLASSPROC`
@@ -733,8 +761,13 @@ So `ManualMode` serializes as `"manual"`/`"min"`/`"max"`, and keys are snake_cas
   **"BrightnessDimmer"**, preserved from the original app.)
 - `static AppSettings Load()`: read & deserialize if the file exists; **return
   `new AppSettings()` (defaults) on any error** — never throw.
-- `void Save()`: create dir, serialize `this`, `File.WriteAllText`. **Throws on
-  failure** (callers wrap in try/catch and treat saving as best-effort).
+- `void Save()`: create dir, serialize `this`, write to `settings.json.tmp` via
+  `File.WriteAllText`, then `File.Move(tempPath, path, overwrite: true)` over
+  the real path. Writing to a temp file first and renaming it into place means
+  a crash or power loss mid-write can never leave a truncated/corrupt
+  `settings.json` — `Load()`'s "any error → defaults" fallback only has to
+  cover a missing or genuinely-invalid file, not a half-written one. **Throws
+  on failure** (callers wrap in try/catch and treat saving as best-effort).
 
 ### 10.4 Example `settings.json`
 
@@ -827,7 +860,21 @@ public static MauiApp CreateMauiApp()
 ```csharp
 public partial class App : Application
 {
-    public App() => InitializeComponent();
+    private static readonly Mutex SingleInstanceMutex;
+    private static readonly bool IsFirstInstance;
+
+    static App()
+    {
+        SingleInstanceMutex = new Mutex(initiallyOwned: true, "Local\\AutoBright_SingleInstance", out bool createdNew);
+        IsFirstInstance = createdNew;
+    }
+
+    public App()
+    {
+        if (!IsFirstInstance) { Environment.Exit(0); }
+        InitializeComponent();
+    }
+
     protected override Window CreateWindow(IActivationState? activationState)
     {
         var options = CommandLineOptions.Parse(Environment.GetCommandLineArgs());
@@ -835,6 +882,17 @@ public partial class App : Application
     }
 }
 ```
+
+**Single instance:** a named per-user `Mutex` (`Local\AutoBright_SingleInstance`)
+is created in the static constructor, before any UI exists. If it already
+existed (a first instance is running), the constructor calls
+`Environment.Exit(0)` immediately — no window is ever created for the second
+launch. This matters because a second instance would otherwise spin up its own
+`BrightnessController` worker thread, driving the same monitors via DDC/CI and
+racing the first instance's `settings.json` writes. The mutex is stored in a
+static field and never disposed, so it's released automatically when the
+process exits (there's no "second instance" scenario where releasing it early
+would be correct).
 
 `App.xaml` merges `Resources/Styles/Colors.xaml`, `Styles.xaml`, and the
 app-specific `AppStyles.xaml`.
@@ -944,8 +1002,8 @@ AbsoluteCheck/ManualCheck`, selects the right manual-mode radio, calls
 `OnSettingCommitted` / `OnSettingCompleted` → `CommitSettings()`.
 
 `CommitSettings()`: bail if `_suppressCommit`; `TryBuildConfig(out updated)` —
-bail on failure; bail if `ConfigEquals(_controller.Config, updated)` (no change);
-else `_controller.ApplyConfig(updated)`,
+bail on failure; bail if `_controller.Config == updated` (no change — `ConfigData`
+is a record, so this is plain value equality); else `_controller.ApplyConfig(updated)`,
 `StartupManager.Apply(updated.RunAtStartup, updated.StartMinimized)` (§17),
 `SaveSettings()`, `SetSettingsStatus("Settings saved.", error:false)`,
 `UpdateManualSliderRange()`.
@@ -969,8 +1027,10 @@ On success build a new `ConfigData` carrying the parsed numerics, the checkboxes
 `ManualBrightness=round(ManualSlider.Value)`, and preserving non-UI fields
 (`ShowLux`, `RemoteHub`) from the previous config.
 
-`ConfigEquals` compares every field **except** `ShowLux`/`RemoteHub` (those aren't
-UI-editable).
+Record equality compares **every** field, including `ShowLux`/`RemoteHub` (those
+aren't UI-editable, but that's safe: `TryBuildConfig` always carries them over
+unchanged from the previous config, §5.2, so they can never be the reason two
+configs compare unequal).
 
 `SetSettingsStatus(msg, error)` sets text/visibility and colour (`ErrorColor`
 when error, else the theme secondary-text colour from `SecondaryTextColor()`).
@@ -1095,6 +1155,7 @@ radius), `SectionHeader` (12pt bold, CharacterSpacing 1, secondary colour),
 | First-run window size | 460 × 720 | `RestoreGeometry` |
 | Settings folder / file | `%APPDATA%/BrightnessDimmer/settings.json` | `AppSettings` |
 | Window title / tray tooltip | "AutoBright" / "Brightness Dimmer" | App / TrayIcon |
+| Single-instance mutex name | `Local\AutoBright_SingleInstance` | `App` |
 
 ---
 
@@ -1111,9 +1172,10 @@ radius), `SectionHeader` (12pt bold, CharacterSpacing 1, secondary colour),
    matching the exact status/line strings and the success/failure/retain logic.
 6. Implement `AppSettings` JSON load/save (§10) and `CommandLineOptions` (§11).
 7. Implement `TrayIcon` (§9) and `StartupManager` (§17).
-8. Wire the MAUI bootstrap (§12) and build `MainPage` XAML + code-behind (§13),
-   including auto-commit, manual override, the run-at-startup / start-minimized
-   options, geometry persistence, tray, and the flicker-free monitor list.
+8. Wire the MAUI bootstrap (§12) — including the single-instance mutex guard
+   (§12.3) — and build `MainPage` XAML + code-behind (§13), including
+   auto-commit, manual override, the run-at-startup / start-minimized options,
+   geometry persistence, tray, and the flicker-free monitor list.
 9. Add `AppStyles.xaml` (§14).
 10. Verify against the behavioural contract in SPECIFICATION.md, especially the
     resilience requirements (sensor absent, monitors lost, write failures, worker
@@ -1229,7 +1291,7 @@ require real DDC/CI monitors or a Yoctopuce sensor to exercise:
 | `AppSettingsTests.cs` | `AppSettings.Save()`/`Load()` JSON round-trip, snake_case keys, enum-as-string, corrupt-file fallback to defaults (§10) |
 | `BrightnessMathTests.cs` | The stateless mapping helpers in §6.4: `ManualTarget`, `ComputeBrightness`, `PercentToMonitorValue`, `MonitorValueToPercent` |
 | `BrightnessStatefulTests.cs` | The stateful helpers in §6.4: `ApplyLuxHysteresis`, `SmoothBrightness` (called against a fresh `BrightnessController` instance per test so state doesn't leak between cases) |
-| `ConfigFactory.cs` | Test-only helper that builds a `ConfigData` directly via object-initializer (bypassing `Normalized()`), since `ConfigData` is a plain sealed class, not a record — `with` expressions aren't available on it |
+| `ConfigFactory.cs` | Test-only helper that builds a `ConfigData` directly via object-initializer, bypassing `Normalized()`, so tests can exercise the pure math helpers with out-of-range or otherwise "raw" values a real caller would never construct |
 
 **Why the §6.4 helpers are `internal`:** they were `private` in the original
 implementation. `src/AutoBright/AssemblyInfo.cs` declares

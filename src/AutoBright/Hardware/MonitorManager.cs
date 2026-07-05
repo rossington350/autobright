@@ -93,6 +93,9 @@ public sealed class MonitorManager
                 uint min = 0, cur = 0, max = 0;
                 if (!GetMonitorBrightness(ph.hPhysicalMonitor, ref min, ref cur, ref max))
                 {
+                    // Excluded from the cache, so nothing will ever destroy this
+                    // handle later — release it now to avoid leaking it.
+                    DestroyPhysicalMonitors(1, new[] { ph });
                     continue;
                 }
                 monitors.Add(new MonitorInfo(
@@ -118,6 +121,13 @@ public sealed class MonitorManager
             uint min = 0, cur = 0, max = 0;
             if (!GetMonitorBrightness(monitor.Handle, ref min, ref cur, ref max))
             {
+                // The monitor no longer responds and is being dropped from the
+                // cache, so nothing will destroy this handle later — release it
+                // now to avoid leaking it.
+                DestroyPhysicalMonitors(1, new[]
+                {
+                    new PHYSICAL_MONITOR { hPhysicalMonitor = monitor.Handle, szPhysicalMonitorDescription = monitor.Name },
+                });
                 continue;
             }
             monitor.MinBrightness = (int)min;

@@ -32,7 +32,6 @@ public sealed class BrightnessController
     // Worker-only state.
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private int _monitorSuccessCount;
-    private int _monitorFailureCount;
     private IReadOnlyList<MonitorInfo> _lastGoodMonitors = new List<MonitorInfo>();
     private double _lastGoodMonitorsTime;
     private double? _smoothedBrightness;
@@ -157,6 +156,8 @@ public sealed class BrightnessController
         double spanBrightness = cfg.MaxBrightness - cfg.MinBrightness;
         if (spanLux <= 0)
         {
+            // Defense-in-depth only: unreachable via ApplyConfig/the constructor,
+            // since Normalized() always guarantees MinLux < MaxLux first.
             return cfg.MinBrightness;
         }
         double result = cfg.MinBrightness + (lux - cfg.MinLux) * spanBrightness / spanLux;
@@ -263,118 +264,13 @@ public sealed class BrightnessController
 
                 if (monitors.Count == 0)
                 {
-                    _monitorFailureCount++;
-                    _monitorSuccessCount = 0;
-                    double now = _clock.Elapsed.TotalSeconds;
-                    if (_lastGoodMonitors.Count > 0 && (now - _lastGoodMonitorsTime) < RetainMonitorTimeout)
-                    {
-                        var lines = new List<string>();
-                        foreach (var monitor in _lastGoodMonitors)
-                        {
-                            string name = string.IsNullOrEmpty(monitor.Name) ? "Unnamed monitor" : monitor.Name;
-                            int currentPct = MonitorValueToPercent(monitor, monitor.CurBrightness);
-                            lines.Add($"{name}: last known current {currentPct}% (raw {monitor.CurBrightness}), hardware range {monitor.MinBrightness}-{monitor.MaxBrightness}");
-                        }
-                        int timeoutLeft = (int)(RetainMonitorTimeout - (now - _lastGoodMonitorsTime));
-                        if (timeoutLeft < 0)
-                        {
-                            timeoutLeft = 0;
-                        }
-                        string targetText = rawTarget is int t1 ? $" Target brightness would be {t1}%" : "";
-                        updates.MonitorList = lines;
-                        updates.MonitorStatus = $"Temporary monitor loss detected. Retaining last known monitor list for {timeoutLeft}s while retrying...{targetText}";
-                    }
-                    else
-                    {
-                        string targetText = rawTarget is int t2 ? $" Target brightness would be {t2}%" : "";
-                        updates.MonitorStatus = $"No compatible monitors found. Ensure your monitor supports Windows DDC/CI brightness control. Waiting for reconnect...{targetText}";
-                        updates.MonitorList = new List<string>();
-                    }
-                    hasMonitorList = true;
-                    hasMonitorStatus = true;
-                    // Leave smoothing state untouched so ramping resumes from the
-                    // last applied value when monitors return.
-                    updates.TargetBrightness = rawTarget;
-                    hasTarget = true;
+                    HandleNoMonitors(rawTarget, updates, out hasMonitorList, out hasMonitorStatus);
                 }
                 else
                 {
-                    _monitorSuccessCount++;
-                    _monitorFailureCount = 0;
-                    _lastGoodMonitors = monitors;
-                    _lastGoodMonitorsTime = _clock.Elapsed.TotalSeconds;
-                    // Manual control applies immediately, bypassing the change-rate
-                    // limit; keep the smoothing baseline in sync so a later switch
-                    // back to automatic ramps from the current value.
-                    int? appliedTarget;
-                    if (cfg.ManualControl)
-                    {
-                        appliedTarget = rawTarget;
-                        if (rawTarget is int manualValue)
-                        {
-                            _smoothedBrightness = manualValue;
-                        }
-                    }
-                    else
-                    {
-                        appliedTarget = SmoothBrightness(cfg, rawTarget);
-                    }
-
-                    // Drop tracked values for handles no longer present.
-                    var currentHandles = new HashSet<IntPtr>();
-                    foreach (var monitor in monitors)
-                    {
-                        currentHandles.Add(monitor.Handle);
-                    }
-                    foreach (var handle in new List<IntPtr>(_lastSentValues.Keys))
-                    {
-                        if (!currentHandles.Contains(handle))
-                        {
-                            _lastSentValues.Remove(handle);
-                        }
-                    }
-
-                    var lines = new List<string>();
-                    foreach (var monitor in monitors)
-                    {
-                        string name = string.IsNullOrEmpty(monitor.Name) ? "Unnamed monitor" : monitor.Name;
-                        int currentPct = MonitorValueToPercent(monitor, monitor.CurBrightness);
-                        lines.Add($"{name}: current {currentPct}% (raw {monitor.CurBrightness}), hardware range {monitor.MinBrightness}-{monitor.MaxBrightness}");
-
-                        if (appliedTarget is int applied)
-                        {
-                            int? targetValue = PercentToMonitorValue(monitor, applied);
-                            if (targetValue is int rawValue)
-                            {
-                                bool lastMatches = _lastSentValues.TryGetValue(monitor.Handle, out int lastSent) && lastSent == rawValue;
-                                if (lastMatches && monitor.CurBrightness == rawValue)
-                                {
-                                    lines.Add($"  unchanged at {applied}% (raw {rawValue})");
-                                }
-                                else if (_monitorManager.SetBrightness(monitor.Handle, rawValue))
-                                {
-                                    _lastSentValues[monitor.Handle] = rawValue;
-                                    lines.Add($"  set to {applied}% (raw {rawValue})");
-                                }
-                                else
-                                {
-                                    _lastSentValues.Remove(monitor.Handle);
-                                    lines.Add("  failed to set brightness");
-                                }
-                            }
-                        }
-                    }
-
-                    if (_monitorSuccessCount >= MonitorStableCycles)
-                    {
-                        updates.MonitorList = lines;
-                        updates.MonitorStatus = "Monitors adjusted.";
-                        hasMonitorList = true;
-                        hasMonitorStatus = true;
-                    }
-                    updates.TargetBrightness = appliedTarget;
-                    hasTarget = true;
+                    HandleMonitorsFound(cfg, monitors, rawTarget, updates, out hasMonitorList, out hasMonitorStatus);
                 }
+                hasTarget = true;
 
                 updates.CurrentLux = lux;
                 hasCurrentLux = true;
@@ -417,5 +313,142 @@ public sealed class BrightnessController
 
             Thread.Sleep(TimeSpan.FromSeconds(Math.Max(0.05, cfg.Interval)));
         }
+    }
+
+    /// <summary>
+    /// No monitors responded this cycle. Shows the last-known monitor list while
+    /// within the retain grace period, otherwise reports the loss. Smoothing
+    /// state is deliberately left untouched so ramping resumes from the last
+    /// applied value once monitors return.
+    /// </summary>
+    private void HandleNoMonitors(int? rawTarget, AppState updates, out bool hasMonitorList, out bool hasMonitorStatus)
+    {
+        _monitorSuccessCount = 0;
+        double now = _clock.Elapsed.TotalSeconds;
+        string targetText = rawTarget is int t ? $" Target brightness would be {t}%" : "";
+
+        if (_lastGoodMonitors.Count > 0 && (now - _lastGoodMonitorsTime) < RetainMonitorTimeout)
+        {
+            var lines = new List<string>();
+            foreach (var monitor in _lastGoodMonitors)
+            {
+                string name = string.IsNullOrEmpty(monitor.Name) ? "Unnamed monitor" : monitor.Name;
+                int currentPct = MonitorValueToPercent(monitor, monitor.CurBrightness);
+                lines.Add($"{name}: last known current {currentPct}% (raw {monitor.CurBrightness}), hardware range {monitor.MinBrightness}-{monitor.MaxBrightness}");
+            }
+            int timeoutLeft = Math.Max(0, (int)(RetainMonitorTimeout - (now - _lastGoodMonitorsTime)));
+            updates.MonitorList = lines;
+            updates.MonitorStatus = $"Temporary monitor loss detected. Retaining last known monitor list for {timeoutLeft}s while retrying...{targetText}";
+        }
+        else
+        {
+            updates.MonitorStatus = $"No compatible monitors found. Ensure your monitor supports Windows DDC/CI brightness control. Waiting for reconnect...{targetText}";
+            updates.MonitorList = new List<string>();
+        }
+        hasMonitorList = true;
+        hasMonitorStatus = true;
+        updates.TargetBrightness = rawTarget;
+    }
+
+    /// <summary>
+    /// At least one monitor responded this cycle: compute the applied target
+    /// (bypassing smoothing under manual control), drive every monitor, and
+    /// publish the monitor list once the success-streak stabilization
+    /// threshold is reached.
+    /// </summary>
+    private void HandleMonitorsFound(ConfigData cfg, IReadOnlyList<MonitorInfo> monitors, int? rawTarget, AppState updates, out bool hasMonitorList, out bool hasMonitorStatus)
+    {
+        _monitorSuccessCount++;
+        _lastGoodMonitors = monitors;
+        _lastGoodMonitorsTime = _clock.Elapsed.TotalSeconds;
+
+        // Manual control applies immediately, bypassing the change-rate limit;
+        // keep the smoothing baseline in sync so a later switch back to
+        // automatic ramps from the current value.
+        int? appliedTarget;
+        if (cfg.ManualControl)
+        {
+            appliedTarget = rawTarget;
+            if (rawTarget is int manualValue)
+            {
+                _smoothedBrightness = manualValue;
+            }
+        }
+        else
+        {
+            appliedTarget = SmoothBrightness(cfg, rawTarget);
+        }
+
+        PruneLastSentValues(monitors);
+
+        var lines = new List<string>();
+        foreach (var monitor in monitors)
+        {
+            string name = string.IsNullOrEmpty(monitor.Name) ? "Unnamed monitor" : monitor.Name;
+            int currentPct = MonitorValueToPercent(monitor, monitor.CurBrightness);
+            lines.Add($"{name}: current {currentPct}% (raw {monitor.CurBrightness}), hardware range {monitor.MinBrightness}-{monitor.MaxBrightness}");
+
+            if (appliedTarget is int applied)
+            {
+                string? driveLine = DriveMonitor(monitor, applied);
+                if (driveLine != null)
+                {
+                    lines.Add(driveLine);
+                }
+            }
+        }
+
+        hasMonitorList = false;
+        hasMonitorStatus = false;
+        if (_monitorSuccessCount >= MonitorStableCycles)
+        {
+            updates.MonitorList = lines;
+            updates.MonitorStatus = "Monitors adjusted.";
+            hasMonitorList = true;
+            hasMonitorStatus = true;
+        }
+        updates.TargetBrightness = appliedTarget;
+    }
+
+    /// <summary>Drop tracked "last sent" values for handles no longer present.</summary>
+    private void PruneLastSentValues(IReadOnlyList<MonitorInfo> monitors)
+    {
+        var currentHandles = new HashSet<IntPtr>();
+        foreach (var monitor in monitors)
+        {
+            currentHandles.Add(monitor.Handle);
+        }
+        foreach (var handle in new List<IntPtr>(_lastSentValues.Keys))
+        {
+            if (!currentHandles.Contains(handle))
+            {
+                _lastSentValues.Remove(handle);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Writes the applied brightness to a single monitor (skipping redundant
+    /// writes) and returns the status line to display for it, or null if the
+    /// applied percentage couldn't be translated to a raw value.
+    /// </summary>
+    private string? DriveMonitor(MonitorInfo monitor, int appliedPercent)
+    {
+        if (PercentToMonitorValue(monitor, appliedPercent) is not int rawValue)
+        {
+            return null;
+        }
+        bool lastMatches = _lastSentValues.TryGetValue(monitor.Handle, out int lastSent) && lastSent == rawValue;
+        if (lastMatches && monitor.CurBrightness == rawValue)
+        {
+            return $"  unchanged at {appliedPercent}% (raw {rawValue})";
+        }
+        if (_monitorManager.SetBrightness(monitor.Handle, rawValue))
+        {
+            _lastSentValues[monitor.Handle] = rawValue;
+            return $"  set to {appliedPercent}% (raw {rawValue})";
+        }
+        _lastSentValues.Remove(monitor.Handle);
+        return "  failed to set brightness";
     }
 }
