@@ -218,8 +218,8 @@ to the download.
 
 ```powershell
 # From the repo root — publishes framework-dependent, then builds the MSI
-./build-installer.ps1                 # version 1.0.0.0
-./build-installer.ps1 -Version 1.1.0.0
+./build-installer.ps1                 # version 1.2.0.0
+./build-installer.ps1 -Version 1.3.0.0
 ```
 
 Only the .NET SDK is required; the WiX build tooling is restored from NuGet

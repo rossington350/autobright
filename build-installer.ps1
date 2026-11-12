@@ -15,13 +15,13 @@
 
 .EXAMPLE
     ./build-installer.ps1
-    ./build-installer.ps1 -Version 1.1.0.0
+    ./build-installer.ps1 -Version 1.3.0.0
 #>
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
     [string]$Rid          = 'win-x64',
-    [string]$Version      = '1.0.0.0'
+    [string]$Version      = '1.2.0.0'
 )
 
 $ErrorActionPreference = 'Stop'

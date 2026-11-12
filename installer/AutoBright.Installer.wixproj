@@ -18,7 +18,7 @@
            -p:ProductVersion=1.2.3.0   the MSI ProductVersion (a.b.c.d)
            -p:AppPublishDir=<abs path> the framework-dependent publish folder to harvest
          Defaults below let `dotnet build` work after build-installer.ps1 has published. -->
-    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0.0</ProductVersion>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">1.2.0.0</ProductVersion>
     <AppPublishDir Condition="'$(AppPublishDir)' == ''">$(MSBuildProjectDirectory)\..\artifacts\publish</AppPublishDir>
 
     <OutputName>AutoBright-$(ProductVersion)-win-x64</OutputName>
