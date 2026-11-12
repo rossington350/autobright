@@ -122,7 +122,7 @@ public sealed class BrightnessController
         lock (_stateLock)
         {
             _state.MonitorStatus = "Refreshing monitor list...";
-            _state.MonitorList = new List<string>();
+            _state.Monitors = new List<MonitorRow>();
         }
         Interlocked.Exchange(ref _refreshRequested, 1);
     }
@@ -314,7 +314,7 @@ public sealed class BrightnessController
                 if (hasMonitorInfo)
                 {
                     _state.MonitorStatus = updates.MonitorStatus;
-                    _state.MonitorList = updates.MonitorList;
+                    _state.Monitors = updates.Monitors;
                 }
             }
 
@@ -337,19 +337,19 @@ public sealed class BrightnessController
 
         if (_lastGoodMonitors.Count > 0 && (now - _lastGoodMonitorsTime) < RetainMonitorTimeout)
         {
-            var lines = new List<string>();
+            var rows = new List<MonitorRow>();
             foreach (var monitor in _lastGoodMonitors)
             {
-                lines.Add(FormatMonitorLine(monitor, "last known current"));
+                rows.Add(ToRow(monitor) with { IsStale = true });
             }
             int timeoutLeft = Math.Max(0, (int)(RetainMonitorTimeout - (now - _lastGoodMonitorsTime)));
-            updates.MonitorList = lines;
+            updates.Monitors = rows;
             updates.MonitorStatus = $"Temporary monitor loss detected. Retaining last known monitor list for {timeoutLeft}s while retrying...{targetText}";
         }
         else
         {
             updates.MonitorStatus = $"No compatible monitors found. Ensure your monitor supports Windows DDC/CI brightness control. Waiting for reconnect...{targetText}";
-            updates.MonitorList = new List<string>();
+            updates.Monitors = new List<MonitorRow>();
         }
         updates.TargetBrightness = rawTarget;
         return true;
@@ -386,19 +386,15 @@ public sealed class BrightnessController
 
         PruneLastSentValues(monitors);
 
-        var lines = new List<string>();
+        var rows = new List<MonitorRow>();
         foreach (var monitor in monitors)
         {
-            lines.Add(FormatMonitorLine(monitor, "current"));
-
+            MonitorRow row = ToRow(monitor);
             if (appliedTarget is int applied)
             {
-                string? driveLine = DriveMonitor(monitor, applied);
-                if (driveLine != null)
-                {
-                    lines.Add(driveLine);
-                }
+                row = DriveMonitor(monitor, applied, row);
             }
+            rows.Add(row);
         }
 
         updates.TargetBrightness = appliedTarget;
@@ -406,17 +402,17 @@ public sealed class BrightnessController
         {
             return false;
         }
-        updates.MonitorList = lines;
+        updates.Monitors = rows;
         updates.MonitorStatus = "Monitors adjusted.";
         return true;
     }
 
-    private static string FormatMonitorLine(MonitorInfo monitor, string currentLabel)
-    {
-        string name = string.IsNullOrEmpty(monitor.Name) ? "Unnamed monitor" : monitor.Name;
-        int currentPct = MonitorValueToPercent(monitor, monitor.CurBrightness);
-        return $"{name}: {currentLabel} {currentPct}% (raw {monitor.CurBrightness}), hardware range {monitor.MinBrightness}-{monitor.MaxBrightness}";
-    }
+    private static MonitorRow ToRow(MonitorInfo monitor) => new(
+        Name: string.IsNullOrWhiteSpace(monitor.Name) ? "Unnamed monitor" : monitor.Name.Trim(),
+        CurrentPercent: MonitorValueToPercent(monitor, monitor.CurBrightness),
+        CurrentRaw: monitor.CurBrightness,
+        HardwareMin: monitor.MinBrightness,
+        HardwareMax: monitor.MaxBrightness);
 
     /// <summary>Drop tracked "last sent" values for handles no longer present.</summary>
     private void PruneLastSentValues(IReadOnlyList<MonitorInfo> monitors)
@@ -437,26 +433,25 @@ public sealed class BrightnessController
 
     /// <summary>
     /// Writes the applied brightness to a single monitor (skipping redundant
-    /// writes) and returns the status line to display for it, or null if the
-    /// applied percentage couldn't be translated to a raw value.
+    /// writes) and returns <paramref name="row"/> annotated with what happened.
     /// </summary>
-    private string? DriveMonitor(MonitorInfo monitor, int appliedPercent)
+    private MonitorRow DriveMonitor(MonitorInfo monitor, int appliedPercent, MonitorRow row)
     {
         if (PercentToMonitorValue(monitor, appliedPercent) is not int rawValue)
         {
-            return null;
+            return row;
         }
         bool lastMatches = _lastSentValues.TryGetValue(monitor.Handle, out int lastSent) && lastSent == rawValue;
         if (lastMatches && monitor.CurBrightness == rawValue)
         {
-            return $"  unchanged at {appliedPercent}% (raw {rawValue})";
+            return row with { Action = $"Holding at {appliedPercent}%" };
         }
         if (_monitorManager.SetBrightness(monitor.Handle, rawValue))
         {
             _lastSentValues[monitor.Handle] = rawValue;
-            return $"  set to {appliedPercent}% (raw {rawValue})";
+            return row with { Action = $"Set to {appliedPercent}% (raw {rawValue})" };
         }
         _lastSentValues.Remove(monitor.Handle);
-        return "  failed to set brightness";
+        return row with { Action = "Failed to set brightness", ActionFailed = true };
     }
 }

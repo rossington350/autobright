@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using AutoBright.Controller;
+using AutoBright.Controls;
 using AutoBright.Settings;
 using Microsoft.UI.Windowing;
 using Windows.Graphics;
@@ -27,9 +28,14 @@ public partial class MainPage : ContentPage
     // restoring the window, so init does not trigger a commit/save.
     private bool _suppressCommit = true;
 
-    private readonly ObservableCollection<string> _monitorLines = new();
+    private readonly ObservableCollection<MonitorItem> _monitorItems = new();
+    private readonly MappingChart _chart = new();
+    private bool? _wideLayout;
 
     private static readonly Color ErrorColor = Color.FromArgb("#E74C3C");
+
+    // Window width (DIPs) at which the settings move into a second column.
+    private const double WideLayoutThreshold = 860;
 
     // Smallest restorable window; anything smaller is treated as a bad save.
     private const int MinRestoreSize = 200;
@@ -43,7 +49,10 @@ public partial class MainPage : ContentPage
 
         InitializeComponent();
 
-        MonitorList.ItemsSource = _monitorLines;
+        BindableLayout.SetItemsSource(MonitorList, _monitorItems);
+        Chart.Drawable = _chart;
+        SizeChanged += (_, _) => ApplyResponsiveLayout();
+        ApplyResponsiveLayout();
 
         // Seed the last-good geometry from settings only if it looks valid, so a
         // previously-saved bad rectangle is never written back out.
@@ -67,6 +76,7 @@ public partial class MainPage : ContentPage
         Loaded -= OnPageLoaded;
 
         WireNativeWindow();
+        CompactSwitch(ManualSwitch);
 
         _geometrySaveTimer = Dispatcher.CreateTimer();
         _geometrySaveTimer.Interval = TimeSpan.FromMilliseconds(400);
@@ -138,6 +148,21 @@ public partial class MainPage : ContentPage
         }
     }
 
+    /// <summary>
+    /// The WinUI ToggleSwitch reserves room for "On"/"Off" text beside the
+    /// knob, which pushes it away from the card's right edge. Drop that text
+    /// and its minimum width so the switch sits flush.
+    /// </summary>
+    private static void CompactSwitch(Switch control)
+    {
+        if (control.Handler?.PlatformView is Microsoft.UI.Xaml.Controls.ToggleSwitch toggle)
+        {
+            toggle.OnContent = null;
+            toggle.OffContent = null;
+            toggle.MinWidth = 0;
+        }
+    }
+
     private void TrySetWindowIcon()
     {
         try
@@ -198,7 +223,7 @@ public partial class MainPage : ContentPage
         else
         {
             // First run: a compact default that fits the content without scrolling.
-            _appWindow.Resize(new SizeInt32(460, 720));
+            _appWindow.Resize(new SizeInt32(500, 820));
         }
     }
 
@@ -207,19 +232,19 @@ public partial class MainPage : ContentPage
     private void PopulateFields()
     {
         ConfigData cfg = _controller.Config;
-        MinLuxBox.Text = cfg.MinLux.ToString(CultureInfo.InvariantCulture);
-        MaxLuxBox.Text = cfg.MaxLux.ToString(CultureInfo.InvariantCulture);
-        MinBrightnessBox.Text = cfg.MinBrightness.ToString(CultureInfo.InvariantCulture);
-        MaxBrightnessBox.Text = cfg.MaxBrightness.ToString(CultureInfo.InvariantCulture);
-        IntervalBox.Text = cfg.Interval.ToString(CultureInfo.InvariantCulture);
-        MaxRateBox.Text = cfg.MaxBrightnessRate.ToString(CultureInfo.InvariantCulture);
-        HysteresisBox.Text = cfg.LuxHysteresis.ToString(CultureInfo.InvariantCulture);
+        MinLuxField.Text = cfg.MinLux.ToString(CultureInfo.InvariantCulture);
+        MaxLuxField.Text = cfg.MaxLux.ToString(CultureInfo.InvariantCulture);
+        MinBrightnessField.Text = cfg.MinBrightness.ToString(CultureInfo.InvariantCulture);
+        MaxBrightnessField.Text = cfg.MaxBrightness.ToString(CultureInfo.InvariantCulture);
+        IntervalField.Text = cfg.Interval.ToString(CultureInfo.InvariantCulture);
+        MaxRateField.Text = cfg.MaxBrightnessRate.ToString(CultureInfo.InvariantCulture);
+        HysteresisField.Text = cfg.LuxHysteresis.ToString(CultureInfo.InvariantCulture);
         TrayCheck.IsChecked = cfg.MinimizeToTray;
         RunAtStartupCheck.IsChecked = cfg.RunAtStartup;
         StartMinimizedCheck.IsChecked = cfg.StartMinimized;
 
         AbsoluteCheck.IsChecked = cfg.ManualAbsolute;
-        ManualCheck.IsChecked = cfg.ManualControl;
+        ManualSwitch.IsToggled = cfg.ManualControl;
         switch (cfg.ManualMode)
         {
             case ManualMode.Max: MaxRadio.IsChecked = true; break;
@@ -235,8 +260,6 @@ public partial class MainPage : ContentPage
     // ---- Settings auto-commit --------------------------------------------
 
     private void OnSettingCommitted(object? sender, EventArgs e) => CommitSettings();
-
-    private void OnSettingCompleted(object? sender, EventArgs e) => CommitSettings();
 
     /// <summary>
     /// Validate every field as a set and, when valid, apply and persist the
@@ -282,32 +305,51 @@ public partial class MainPage : ContentPage
         ConfigData previous = _controller.Config;
         updated = previous;
 
-        if (!TryParseField(MinLuxBox.Text, out double minLux)
-            || !TryParseField(MaxLuxBox.Text, out double maxLux)
-            || !TryParseInt(MinBrightnessBox.Text, out int minBrightness)
-            || !TryParseInt(MaxBrightnessBox.Text, out int maxBrightness)
-            || !TryParseField(IntervalBox.Text, out double interval)
-            || !TryParseField(MaxRateBox.Text, out double maxRate)
-            || !TryParseField(HysteresisBox.Text, out double hysteresis))
+        NumberField[] fields =
         {
-            SetSettingsStatus("Enter valid numeric values for all fields.", error: true);
+            MinLuxField, MaxLuxField, MinBrightnessField, MaxBrightnessField,
+            IntervalField, MaxRateField, HysteresisField,
+        };
+        foreach (NumberField field in fields)
+        {
+            field.Error = null;
+        }
+
+        // Parse every field so all format errors show at once, not one at a time.
+        bool parsed = ParseDouble(MinLuxField, out double minLux)
+                      & ParseDouble(MaxLuxField, out double maxLux)
+                      & ParseInt(MinBrightnessField, out int minBrightness)
+                      & ParseInt(MaxBrightnessField, out int maxBrightness)
+                      & ParseDouble(IntervalField, out double interval)
+                      & ParseDouble(MaxRateField, out double maxRate)
+                      & ParseDouble(HysteresisField, out double hysteresis);
+        if (!parsed)
+        {
+            SetSettingsStatus("", error: false);
             return false;
         }
 
-        string? error =
-            minLux >= maxLux ? "Minimum lux must be lower than maximum lux."
-            : !(minBrightness is >= 0 and <= 100 && maxBrightness is >= 0 and <= 100) ? "Brightness values must be between 0 and 100."
-            : minBrightness >= maxBrightness ? "Minimum brightness must be lower than maximum brightness."
-            : !(minLux >= 0 && maxLux <= ConfigData.MaxLuxLimit) ? $"Lux values must be between 0 and {ConfigData.MaxLuxLimit:N0}."
-            : interval <= 0 ? "Update rate must be greater than zero."
-            : interval > ConfigData.MaxIntervalSeconds ? $"Update rate cannot exceed {ConfigData.MaxIntervalSeconds:N0} seconds."
-            : maxRate < 0 ? "Max change rate cannot be negative (use 0 to disable smoothing)."
-            : hysteresis < 0 ? "Lux hysteresis cannot be negative (use 0 to disable it)."
-            : null;
+        string luxRange = $"Must be 0–{ConfigData.MaxLuxLimit:N0}";
+        Check(MinLuxField, minLux >= 0 && minLux <= ConfigData.MaxLuxLimit, luxRange);
+        Check(MaxLuxField, maxLux >= 0 && maxLux <= ConfigData.MaxLuxLimit, luxRange);
+        Check(MaxLuxField, minLux < maxLux, "Must be above min lux");
+        Check(MinBrightnessField, minBrightness is >= 0 and <= 100, "Must be 0–100");
+        Check(MaxBrightnessField, maxBrightness is >= 0 and <= 100, "Must be 0–100");
+        Check(MaxBrightnessField, minBrightness < maxBrightness, "Must be above min brightness");
+        Check(IntervalField, interval > 0, "Must be above 0");
+        Check(IntervalField, interval <= ConfigData.MaxIntervalSeconds, $"At most {ConfigData.MaxIntervalSeconds:N0} s");
+        Check(MaxRateField, maxRate >= 0, "Can't be negative (0 turns smoothing off)");
+        Check(HysteresisField, hysteresis >= 0, "Can't be negative (0 turns it off)");
 
-        if (error != null)
+        if (fields.Any(f => !string.IsNullOrEmpty(f.Error)))
         {
-            SetSettingsStatus(error, error: true);
+            // Advanced fields are hidden by default; don't let an error hide in there.
+            if (!string.IsNullOrEmpty(IntervalField.Error) || !string.IsNullOrEmpty(MaxRateField.Error)
+                || !string.IsNullOrEmpty(HysteresisField.Error))
+            {
+                SetAdvancedExpanded(true);
+            }
+            SetSettingsStatus("", error: false);
             return false;
         }
 
@@ -325,7 +367,7 @@ public partial class MainPage : ContentPage
             StartMinimized = StartMinimizedCheck.IsChecked,
             RunAtStartup = RunAtStartupCheck.IsChecked,
             RemoteHub = previous.RemoteHub,
-            ManualControl = ManualCheck.IsChecked,
+            ManualControl = ManualSwitch.IsToggled,
             ManualMode = GetSelectedManualMode(),
             ManualBrightness = (int)Math.Round(ManualSlider.Value),
             ManualAbsolute = AbsoluteCheck.IsChecked,
@@ -364,7 +406,7 @@ public partial class MainPage : ContentPage
 
     // ---- Manual override --------------------------------------------------
 
-    private void OnManualCheckChanged(object? sender, CheckedChangedEventArgs e)
+    private void OnManualToggled(object? sender, ToggledEventArgs e)
     {
         UpdateManualVisibility();
         if (_suppressCommit)
@@ -374,7 +416,7 @@ public partial class MainPage : ContentPage
 
         // When manual control is switched on, seed the slider with the brightness
         // we are currently driving so there is no visible jump.
-        if (ManualCheck.IsChecked)
+        if (ManualSwitch.IsToggled)
         {
             double seed = _controller.GetSnapshot().TargetBrightness ?? ManualSlider.Value;
             seed = Math.Max(ManualSlider.Minimum, Math.Min(ManualSlider.Maximum, seed));
@@ -463,7 +505,7 @@ public partial class MainPage : ContentPage
 
     private void UpdateManualVisibility()
     {
-        bool manual = ManualCheck.IsChecked;
+        bool manual = ManualSwitch.IsToggled;
         ManualPanel.IsVisible = manual;
         ManualSlider.IsEnabled = manual && ManualRadio.IsChecked;
     }
@@ -634,71 +676,173 @@ public partial class MainPage : ContentPage
     private void RefreshUi()
     {
         AppState state = _controller.GetSnapshot();
+        ConfigData cfg = _controller.Config;
+        bool hasLux = state.CurrentLux is double;
 
-        if (_controller.Config.ShowLux)
+        // Ambient light
+        if (!cfg.ShowLux)
         {
-            LuxValue.Text = state.CurrentLux is double lux
-                ? lux.ToString("F1", CultureInfo.InvariantCulture)
-                : "n/a";
+            LuxValue.Text = "Hidden";
+            LuxUnit.IsVisible = false;
         }
         else
         {
-            LuxValue.Text = "hidden";
+            LuxValue.Text = state.CurrentLux is double lux
+                ? lux.ToString(lux < 100 ? "F1" : "F0", CultureInfo.InvariantCulture)
+                : "—";
+            LuxUnit.IsVisible = hasLux;
         }
 
-        TargetValue.Text = state.TargetBrightness is int target ? $"{target}%" : "n/a";
+        // Brightness
+        TargetValue.Text = state.TargetBrightness is int target ? $"{target}%" : "—";
+        BrightnessBar.Progress = (state.TargetBrightness ?? 0) / 100.0;
 
+        // Sensor badge: a reading this cycle means the sensor is up.
+        SensorDot.Fill = new SolidColorBrush(ResourceColor(hasLux ? "OkColor" : "ErrorColor", hasLux ? Colors.Green : Colors.Red));
+        SensorText.Text = hasLux ? "Sensor connected" : "No sensor reading";
+        ReconnectButton.IsVisible = !hasLux;
+
+        // Mode badge
+        ModeText.Text = !cfg.ManualControl
+            ? "Auto"
+            : cfg.ManualMode switch
+            {
+                ManualMode.Min => "Manual · minimum",
+                ManualMode.Max => "Manual · maximum",
+                _ => "Manual",
+            };
+        ModeText.TextColor = cfg.ManualControl
+            ? ResourceColor("WarnColor", Colors.Orange)
+            : ResourceColor("Accent", Colors.SteelBlue);
+
+        // Mapping chart
+        _chart.Config = cfg;
+        _chart.Lux = state.CurrentLux;
+        _chart.TargetBrightness = state.TargetBrightness;
+        _chart.Accent = ResourceColor("Accent", Colors.SteelBlue);
+        _chart.Muted = SecondaryTextColor();
+        _chart.Grid = ThemeColor("CardStrokeLight", "CardStrokeDark", Colors.LightGray);
+        _chart.MarkerRing = ThemeColor("CardBgLight", "CardBgDark", Colors.White);
+        Chart.Invalidate();
+
+        // Monitors
         bool hasError = !string.IsNullOrEmpty(state.LastError);
         WorkerStatus.Text = hasError
             ? $"{state.MonitorStatus}  •  {state.LastError}"
             : state.MonitorStatus;
         WorkerStatus.TextColor = hasError ? ErrorColor : SecondaryTextColor();
 
-        UpdateMonitorList(state.MonitorList);
+        UpdateMonitorList(state.Monitors);
     }
 
-    private void UpdateMonitorList(List<string> lines)
+    private void UpdateMonitorList(List<MonitorRow> rows)
     {
-        // Update in place so the CollectionView keeps its scroll position and does
-        // not flicker every refresh.
-        if (_monitorLines.Count == lines.Count)
-        {
-            bool identical = true;
-            for (int i = 0; i < lines.Count; i++)
-            {
-                if (_monitorLines[i] != lines[i])
-                {
-                    identical = false;
-                    break;
-                }
-            }
-            if (identical)
-            {
-                return;
-            }
-        }
+        Color actionColor = SecondaryTextColor();
+        var items = rows.Select(r => MonitorItem.From(r, actionColor, ErrorColor)).ToList();
 
-        for (int i = 0; i < lines.Count; i++)
+        // Update in place (records compare by value) so unchanged rows don't
+        // get rebuilt and the list doesn't flicker on every refresh.
+        for (int i = 0; i < items.Count; i++)
         {
-            if (i < _monitorLines.Count)
+            if (i >= _monitorItems.Count)
             {
-                if (_monitorLines[i] != lines[i])
-                {
-                    _monitorLines[i] = lines[i];
-                }
+                _monitorItems.Add(items[i]);
             }
-            else
+            else if (_monitorItems[i] != items[i])
             {
-                _monitorLines.Add(lines[i]);
+                _monitorItems[i] = items[i];
             }
         }
-        while (_monitorLines.Count > lines.Count)
+        while (_monitorItems.Count > items.Count)
         {
-            _monitorLines.RemoveAt(_monitorLines.Count - 1);
+            _monitorItems.RemoveAt(_monitorItems.Count - 1);
         }
     }
+
+    // ---- Layout -----------------------------------------------------------
+
+    /// <summary>
+    /// Put the settings in a second column when the window is wide enough,
+    /// otherwise stack them below the status column.
+    /// </summary>
+    private void ApplyResponsiveLayout()
+    {
+        if (Width <= 0)
+        {
+            return;
+        }
+        bool wide = Width >= WideLayoutThreshold;
+        if (_wideLayout == wide)
+        {
+            return;
+        }
+        _wideLayout = wide;
+
+        RootGrid.ColumnDefinitions.Clear();
+        RootGrid.RowDefinitions.Clear();
+        if (wide)
+        {
+            RootGrid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1.2, GridUnitType.Star)));
+            RootGrid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
+            Grid.SetRow(RightColumn, 0);
+            Grid.SetColumn(RightColumn, 1);
+        }
+        else
+        {
+            RootGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+            RootGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+            Grid.SetRow(RightColumn, 1);
+            Grid.SetColumn(RightColumn, 0);
+        }
+    }
+
+    private void OnAdvancedToggle(object? sender, TappedEventArgs e) => SetAdvancedExpanded(!AdvancedPanel.IsVisible);
+
+    private void SetAdvancedExpanded(bool expanded)
+    {
+        AdvancedPanel.IsVisible = expanded;
+        // Segoe MDL2 Assets: ChevronDown / ChevronRight.
+        AdvancedChevron.Text = expanded ? "" : "";
+    }
+
+    private static Color ResourceColor(string key, Color fallback)
+        => Application.Current?.Resources is { } res && res.TryGetValue(key, out object? v) && v is Color c
+            ? c
+            : fallback;
+
+    private static Color ThemeColor(string lightKey, string darkKey, Color fallback)
+        => ResourceColor(Application.Current?.RequestedTheme == AppTheme.Dark ? darkKey : lightKey, fallback);
 
     // ---- Helpers ----------------------------------------------------------
+
+    private static bool ParseDouble(NumberField field, out double value)
+    {
+        if (TryParseField(field.Text, out value))
+        {
+            return true;
+        }
+        field.Error = "Enter a number";
+        return false;
+    }
+
+    private static bool ParseInt(NumberField field, out int value)
+    {
+        if (TryParseInt(field.Text, out value))
+        {
+            return true;
+        }
+        field.Error = "Enter a whole number";
+        return false;
+    }
+
+    /// <summary>Set <paramref name="message"/> on the field unless it already has an error.</summary>
+    private static void Check(NumberField field, bool ok, string message)
+    {
+        if (!ok && string.IsNullOrEmpty(field.Error))
+        {
+            field.Error = message;
+        }
+    }
 
     // NumberStyles.Float accepts "NaN" and "Infinity", and comparisons with
     // NaN are always false, so it would get past every range check. Reject
@@ -709,4 +853,28 @@ public partial class MainPage : ContentPage
 
     private static bool TryParseInt(string? text, out int value)
         => int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+}
+
+/// <summary>Display model for one monitor row in the Monitors card.</summary>
+public sealed record MonitorItem(
+    string Name,
+    string PercentText,
+    double Progress,
+    string Detail,
+    string Action,
+    bool HasAction,
+    Color ActionColor,
+    double Opacity)
+{
+    public static MonitorItem From(MonitorRow row, Color normal, Color error) => new(
+        Name: row.Name,
+        PercentText: $"{row.CurrentPercent}%",
+        Progress: Math.Clamp(row.CurrentPercent / 100.0, 0, 1),
+        Detail: row.IsStale
+            ? $"Last known value · not responding · raw {row.CurrentRaw} (range {row.HardwareMin}–{row.HardwareMax})"
+            : $"Raw {row.CurrentRaw} (range {row.HardwareMin}–{row.HardwareMax})",
+        Action: row.Action ?? "",
+        HasAction: !string.IsNullOrEmpty(row.Action),
+        ActionColor: row.ActionFailed ? error : normal,
+        Opacity: row.IsStale ? 0.55 : 1.0);
 }

@@ -12,7 +12,7 @@ public sealed class AppState
     public int? TargetBrightness { get; set; }
     public string MonitorStatus { get; set; } = "Starting...";
     public string LastError { get; set; } = "";
-    public List<string> MonitorList { get; set; } = new();
+    public List<MonitorRow> Monitors { get; set; } = new();
 
     public AppState Clone() => new()
     {
@@ -20,6 +20,23 @@ public sealed class AppState
         TargetBrightness = TargetBrightness,
         MonitorStatus = MonitorStatus,
         LastError = LastError,
-        MonitorList = new List<string>(MonitorList),
+        Monitors = new List<MonitorRow>(Monitors),
     };
 }
+
+/// <summary>
+/// One monitor as shown in the UI. Immutable, so snapshots can share instances
+/// and the UI can diff rows with value equality.
+/// </summary>
+/// <param name="CurrentPercent">Brightness read back this cycle, as 0-100%.</param>
+/// <param name="IsStale">True while showing a last-known entry during a temporary monitor loss.</param>
+/// <param name="Action">What this cycle did to the monitor (e.g. "Set to 60%"), or null.</param>
+public sealed record MonitorRow(
+    string Name,
+    int CurrentPercent,
+    int CurrentRaw,
+    int HardwareMin,
+    int HardwareMax,
+    bool IsStale = false,
+    string? Action = null,
+    bool ActionFailed = false);

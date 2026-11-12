@@ -6,6 +6,8 @@ namespace AutoBright.Tests;
 
 public class AppStateTests
 {
+    private static MonitorRow Row(string name) => new(name, 50, 50, 0, 100);
+
     [Fact]
     public void FreshlyConstructedAppState_HasDefaultValues()
     {
@@ -15,7 +17,7 @@ public class AppStateTests
         Assert.Null(appState.TargetBrightness);
         Assert.Equal("Starting...", appState.MonitorStatus);
         Assert.Empty(appState.LastError);
-        Assert.Empty(appState.MonitorList);
+        Assert.Empty(appState.Monitors);
     }
 
     [Fact]
@@ -38,42 +40,42 @@ public class AppStateTests
     }
 
     [Fact]
-    public void Clone_CopiesMonitorListContents()
+    public void Clone_CopiesMonitorsContents()
     {
         var original = new AppState
         {
-            MonitorList = new List<string> { "Monitor1", "Monitor2" }
+            Monitors = new List<MonitorRow> { Row("Monitor1"), Row("Monitor2") }
         };
 
         var clone = original.Clone();
 
-        Assert.Equal(original.MonitorList.Count, clone.MonitorList.Count);
-        for (int i = 0; i < original.MonitorList.Count; i++)
+        Assert.Equal(original.Monitors.Count, clone.Monitors.Count);
+        for (int i = 0; i < original.Monitors.Count; i++)
         {
-            Assert.Equal(original.MonitorList[i], clone.MonitorList[i]);
+            Assert.Equal(original.Monitors[i], clone.Monitors[i]);
         }
     }
 
     [Fact]
-    public void Clone_AllocatesNewMonitorListInstance()
+    public void Clone_AllocatesNewMonitorsInstance()
     {
         var original = new AppState
         {
-            MonitorList = new List<string> { "Monitor1", "Monitor2" }
+            Monitors = new List<MonitorRow> { Row("Monitor1"), Row("Monitor2") }
         };
 
         var clone = original.Clone();
 
-        Assert.NotSame(original.MonitorList, clone.MonitorList);
+        Assert.NotSame(original.Monitors, clone.Monitors);
 
         // Mutate the clone's list and verify it doesn't affect the original
-        clone.MonitorList.Add("Monitor3");
-        Assert.Equal(2, original.MonitorList.Count);
-        Assert.Equal(3, clone.MonitorList.Count);
+        clone.Monitors.Add(Row("Monitor3"));
+        Assert.Equal(2, original.Monitors.Count);
+        Assert.Equal(3, clone.Monitors.Count);
 
         // Mutate the original's list and verify it doesn't affect the clone
-        original.MonitorList.Add("Monitor4");
-        Assert.Equal(3, original.MonitorList.Count);
-        Assert.Equal(3, clone.MonitorList.Count);
+        original.Monitors.Add(Row("Monitor4"));
+        Assert.Equal(3, original.Monitors.Count);
+        Assert.Equal(3, clone.Monitors.Count);
     }
 }

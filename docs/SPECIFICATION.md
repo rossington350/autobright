@@ -358,47 +358,83 @@ separately and communicates only through the shared, locked state.
 There is **no explicit Save/Apply button** — every editable control auto-commits
 (validating and persisting) as described in §8.4.
 
-### 8.1 Input controls (editable fields)
+### 8.1 Layout
 
-- **Settings card** — numeric entry fields for **Min lux**, **Max lux**, **Min
-  brightness (%)**, **Max brightness (%)**, **Update rate (s)**, **Max change
-  rate (%/s)**, **Lux hysteresis**, and three checkboxes: **"Minimize to tray on
-  close"** (`minimize_to_tray`), **"Run at Windows startup"** (`run_at_startup`,
-  §9.1), and **"Start minimized to tray"** (`start_minimized`). A status line
-  beneath the fields shows save/validation feedback (§8.4).
-- **Manual override card** — a checkbox **"Manual brightness control"** that
-  reveals, when enabled: a checkbox **"Use absolute 0–100% range (ignore
-  configured min/max)"** (`manual_absolute`), a three-way **Min / Max / Manual**
-  radio group (`manual_mode`), and a **slider** with a live percentage label
-  (`manual_brightness`, enabled only in `manual` mode). The slider's range is the
-  absolute 0–100% when `manual_absolute` is set, otherwise the configured
+A header (app identity plus a **Hide to tray** button) above two groups of
+cards. Windows at least ~860 DIPs wide show them side by side; narrower windows
+stack them:
+
+- **Status column** — the live status card (§8.3), the manual override card,
+  and the monitors card.
+- **Settings column** — **Light mapping**, a collapsible **Advanced** card
+  (collapsed by default; expanded automatically if one of its fields has a
+  validation error), and **Window**.
+
+**Colours follow Windows.** Light/dark follows the system app mode, and the
+background uses Mica where available. The accent (buttons, links, switches,
+sliders, progress bars, the chart) is the user's Windows accent colour: the
+`AccentDark1` shade in light mode and `AccentLight2` in dark mode, with black or
+white text on accent fills chosen for contrast. In high-contrast mode the system
+highlight colours are used instead. Changes to the accent, theme, or contrast
+mode apply live, without a restart. The app icon is deliberately neutral
+(graphite with a white glyph) so it suits any accent.
+
+### 8.2 Input controls (editable fields)
+
+Each numeric field shows a caption, the entry, a unit suffix, and a short hint
+line underneath that is replaced by the field's validation error (§8.4).
+
+- **Light mapping** — **Min lux**, **Max lux** (lx), **Min brightness**,
+  **Max brightness** (%).
+- **Advanced** — **Update every** (s, `interval`), **Max change rate** (%/s),
+  **Lux hysteresis** (lx).
+- **Window** — three checkboxes: **"Minimize to tray on close"**
+  (`minimize_to_tray`), **"Run at Windows startup"** (`run_at_startup`, §9.1),
+  and **"Start minimized to tray"** (`start_minimized`). A status line below the
+  settings cards shows save feedback.
+- **Manual override card** — a **switch** that reveals, when on: a three-way
+  **Custom / Minimum / Maximum** radio group (`manual_mode`: `manual` / `min` /
+  `max`), a **slider** with a live percentage label (`manual_brightness`,
+  enabled only in `manual` mode), and a checkbox **"Use the full 0–100% range
+  (ignore the configured limits)"** (`manual_absolute`). The slider's range is
+  the absolute 0–100% when `manual_absolute` is set, otherwise the configured
   `min_brightness`–`max_brightness` band, and the current value is clamped into
   that range whenever the range changes. When manual control is first switched
-  on, the slider is seeded with the brightness currently being driven so there is
-  no visible jump.
+  on, the slider is seeded with the brightness currently being driven so there
+  is no visible jump.
 
 Some persisted parameters are **not** surfaced as GUI controls and are set only
 via CLI/settings: `show_lux` and `remote_hub`.
 
-### 8.2 Buttons (Monitors card)
-
-- **Refresh monitors** — force a full monitor re-enumeration.
-- **Reconnect sensor** — force the sensor to drop and re-register next cycle.
-- **Hide to tray** — hide the window to the notification area.
+**Actions:** **Refresh** (monitors card) forces a full monitor re-enumeration;
+**Reconnect sensor** (status card, shown only while there is no sensor reading)
+forces the sensor to drop and re-register next cycle; **Hide to tray** (header)
+hides the window to the notification area.
 
 ### 8.3 Live status display (refreshed ~ every 500 ms)
 
-- **Current lux**: shows the value (e.g. `142.5`) when `show_lux` is enabled;
-  shows `hidden` when disabled; `n/a` when unavailable.
-- **Target brightness**: e.g. `73%` or `n/a`.
+- **Ambient light**: the value in lx (one decimal below 100 lx, whole numbers
+  above) when `show_lux` is enabled; `Hidden` when disabled; `—` when
+  unavailable.
+- **Brightness**: the target, e.g. `73%` or `—`, with a progress bar.
+- **Badges**: sensor state (*Sensor connected* / *No sensor reading*, derived
+  from whether this cycle produced a lux value) and mode (*Auto*, *Manual*,
+  *Manual · minimum*, *Manual · maximum*).
+- **Light → brightness chart**: the mapping curve (flat at `min_brightness`
+  below `min_lux`, linear to `max_lux`, flat at `max_brightness` above) with
+  dashed markers at both thresholds and a dot on the curve at the current
+  reading. Under manual control the curve is dimmed and a dashed horizontal line
+  shows the manual target instead.
 - **Worker status line**: the current monitor status message, with `last_error`
   appended (after a separator) when present; rendered in an error colour when an
   error is shown.
-- **Monitor list**: a scrollable, monospaced list with one line per monitor
-  describing current %, raw value, and hardware range, plus per-cycle action
-  annotations ("set to N%", "unchanged at N%", "failed to set brightness", "last
-  known current…"). The list is updated in place (matching lines are left
-  untouched) so it does not flicker or lose scroll position between refreshes.
+- **Monitor rows**: one row per monitor with its name, current %, a progress
+  bar, the raw value and hardware range, and the per-cycle action ("Set to N%",
+  "Holding at N%", or "Failed to set brightness" in the error colour). During a
+  temporary monitor loss the last-known rows are shown dimmed and marked as not
+  responding. The worker publishes structured rows (`MonitorRow`), and the UI
+  updates its list in place (rows that compare equal are left untouched) so it
+  does not flicker between refreshes.
 
 The UI refresh reads a snapshot of the shared state under the lock and runs on a
 repeating timer while the app is running.
@@ -415,12 +451,16 @@ parse (lux/rate/hysteresis as floats, brightness as integers); then enforce:
 
 - `min_lux < max_lux`
 - both brightness values within 0–100, and `min_brightness < max_brightness`
-- `interval > 0`
+- both lux values within 0–1,000,000
+- `0 < interval <= 3600`
 - `max_brightness_rate >= 0` (0 disables smoothing)
 - `lux_hysteresis >= 0` (0 disables hysteresis)
 
-Validation feedback is **inline** (a status label), not a modal dialog. On any
-parse failure or violation the message is shown and the commit is abandoned,
+Validation feedback is **inline** and per field (the offending field's caption
+turns the error colour and its hint line shows the message), not a modal
+dialog. All fields are checked at once, so several errors can show together.
+Non-finite input (`NaN`, `Infinity`) counts as a parse failure. On any parse
+failure or violation the commit is abandoned,
 leaving the previously applied configuration untouched. On success (and only if
 something actually changed) the live parameters are updated, settings are
 persisted, and a "Settings saved." status is shown.

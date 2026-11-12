@@ -59,6 +59,73 @@
         <Setter Property="Margin" Value="2,0,0,2" />
     </Style>
 
+    <!-- The user's Windows accent, resolved for the current light/dark theme.
+         These are defaults (the Windows default blue); SystemAccent replaces
+         them at startup and whenever the accent or theme changes, so always
+         reference them with DynamicResource. -->
+    <Color x:Key="Accent">#005FB8</Color>
+    <Color x:Key="AccentText">#FFFFFF</Color>
+
+    <Color x:Key="OkColor">#2E9E5B</Color>
+    <Color x:Key="WarnColor">#D9822B</Color>
+    <Color x:Key="BadgeBgLight">#F0F0F0</Color>
+    <Color x:Key="BadgeBgDark">#2C2C2C</Color>
+
+    <Style x:Key="StatUnit" TargetType="Label">
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="VerticalOptions" Value="End" />
+        <Setter Property="Margin" Value="0,0,0,5" />
+        <Setter Property="TextColor"
+                Value="{AppThemeBinding Light={StaticResource SecondaryTextLight}, Dark={StaticResource SecondaryTextDark}}" />
+    </Style>
+
+    <!-- Small pill used for at-a-glance state (sensor, mode). -->
+    <Style x:Key="Badge" TargetType="Border">
+        <Setter Property="Padding" Value="10,4" />
+        <Setter Property="StrokeThickness" Value="0" />
+        <Setter Property="BackgroundColor"
+                Value="{AppThemeBinding Light={StaticResource BadgeBgLight}, Dark={StaticResource BadgeBgDark}}" />
+        <Setter Property="StrokeShape">
+            <RoundRectangle CornerRadius="11" />
+        </Setter>
+    </Style>
+
+    <!-- A row nested inside a card (one per monitor). -->
+    <Style x:Key="InsetRow" TargetType="Border">
+        <Setter Property="Padding" Value="12,10" />
+        <Setter Property="BackgroundColor"
+                Value="{AppThemeBinding Light={StaticResource ListBgLight}, Dark={StaticResource ListBgDark}}" />
+        <Setter Property="Stroke"
+                Value="{AppThemeBinding Light={StaticResource CardStrokeLight}, Dark={StaticResource CardStrokeDark}}" />
+        <Setter Property="StrokeThickness" Value="1" />
+        <Setter Property="StrokeShape">
+            <RoundRectangle CornerRadius="6" />
+        </Setter>
+    </Style>
+
+    <!-- Outlined secondary button. -->
+    <Style x:Key="GhostButton" TargetType="Button">
+        <Setter Property="BackgroundColor" Value="Transparent" />
+        <Setter Property="TextColor"
+                Value="{DynamicResource Accent}" />
+        <Setter Property="BorderColor"
+                Value="{AppThemeBinding Light={StaticResource CardStrokeLight}, Dark={StaticResource CardStrokeDark}}" />
+        <Setter Property="BorderWidth" Value="1" />
+        <Setter Property="Padding" Value="12,6" />
+        <Setter Property="MinimumHeightRequest" Value="32" />
+    </Style>
+
+    <!-- Borderless text button for in-card actions. -->
+    <Style x:Key="LinkButton" TargetType="Button">
+        <Setter Property="BackgroundColor" Value="Transparent" />
+        <Setter Property="BorderWidth" Value="0" />
+        <Setter Property="Padding" Value="6,2" />
+        <Setter Property="MinimumHeightRequest" Value="28" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="TextColor"
+                Value="{DynamicResource Accent}" />
+    </Style>
+
     <Style x:Key="SecondaryText" TargetType="Label">
         <Setter Property="TextColor"
                 Value="{AppThemeBinding Light={StaticResource SecondaryTextLight}, Dark={StaticResource SecondaryTextDark}}" />

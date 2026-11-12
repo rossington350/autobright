@@ -1,205 +1,239 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:AutoBright.Controls"
+             xmlns:local="clr-namespace:AutoBright"
              x:Class="AutoBright.MainPage"
              Title="AutoBright"
              BackgroundColor="{AppThemeBinding Light={StaticResource PageBgLight}, Dark={StaticResource PageBgDark}}">
 
-    <ScrollView Padding="20">
-        <VerticalStackLayout Spacing="16">
+    <ScrollView>
+        <VerticalStackLayout Padding="20,16,20,20" Spacing="16">
 
-            <!-- Header -->
-            <HorizontalStackLayout Spacing="12" Margin="2,0,0,0">
-                <Border WidthRequest="40" HeightRequest="40" Padding="0"
-                        BackgroundColor="{StaticResource Primary}"
-                        VerticalOptions="Center">
-                    <Border.StrokeShape>
-                        <RoundRectangle CornerRadius="10" />
-                    </Border.StrokeShape>
-                    <Label Text="&#x2600;" FontSize="20" TextColor="White"
-                           HorizontalOptions="Center" VerticalOptions="Center" />
-                </Border>
-                <VerticalStackLayout VerticalOptions="Center">
+            <!-- Header: identity on the left, window action on the right -->
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                <Image Source="logo.png" WidthRequest="40" HeightRequest="40"
+                       VerticalOptions="Center" SemanticProperties.Description="AutoBright logo" />
+                <VerticalStackLayout Grid.Column="1" VerticalOptions="Center">
                     <Label Text="AutoBright" FontSize="20" FontAttributes="Bold" />
                     <Label Text="Ambient-light brightness control" FontSize="13"
                            Style="{StaticResource SecondaryText}" />
                 </VerticalStackLayout>
-            </HorizontalStackLayout>
-
-            <!-- Live readout -->
-            <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
-                <Border Grid.Column="0" Style="{StaticResource Card}">
-                    <VerticalStackLayout>
-                        <Label Text="CURRENT LUX" Style="{StaticResource StatCaption}" />
-                        <Label x:Name="LuxValue" Text="—" Style="{StaticResource StatValue}" />
-                    </VerticalStackLayout>
-                </Border>
-                <Border Grid.Column="1" Style="{StaticResource Card}">
-                    <VerticalStackLayout>
-                        <Label Text="TARGET BRIGHTNESS" Style="{StaticResource StatCaption}" />
-                        <Label x:Name="TargetValue" Text="—" Style="{StaticResource StatValue}" />
-                    </VerticalStackLayout>
-                </Border>
+                <Button x:Name="HideButton" Grid.Column="2" Text="Hide to tray"
+                        Style="{StaticResource GhostButton}" VerticalOptions="Center"
+                        Clicked="OnHideClick" />
             </Grid>
 
-            <!-- Manual override -->
-            <VerticalStackLayout Spacing="6">
-                <Label Text="MANUAL OVERRIDE" Style="{StaticResource SectionHeader}" />
-                <Border Style="{StaticResource Card}">
-                    <VerticalStackLayout Spacing="12">
-                        <HorizontalStackLayout Spacing="8">
-                            <CheckBox x:Name="ManualCheck" VerticalOptions="Center"
-                                      CheckedChanged="OnManualCheckChanged" />
-                            <Label Text="Manual brightness control" VerticalOptions="Center" />
-                        </HorizontalStackLayout>
+            <!-- Two columns on wide windows, stacked on narrow ones (see ApplyResponsiveLayout) -->
+            <Grid x:Name="RootGrid" ColumnSpacing="16" RowSpacing="16">
 
-                        <VerticalStackLayout x:Name="ManualPanel" Spacing="14" IsVisible="False">
-                            <HorizontalStackLayout Spacing="8">
-                                <CheckBox x:Name="AbsoluteCheck" VerticalOptions="Center"
-                                          CheckedChanged="OnAbsoluteChanged" />
-                                <Label Text="Use absolute 0–100% range (ignore configured min/max)"
-                                       VerticalOptions="Center" />
-                            </HorizontalStackLayout>
+                <!-- ============ Left: live status, manual override, monitors ============ -->
+                <VerticalStackLayout x:Name="LeftColumn" Spacing="16">
 
-                            <HorizontalStackLayout Spacing="20">
-                                <RadioButton x:Name="MinRadio" Content="Min"
-                                             GroupName="ManualMode" CheckedChanged="OnManualModeChanged" />
-                                <RadioButton x:Name="MaxRadio" Content="Max"
-                                             GroupName="ManualMode" CheckedChanged="OnManualModeChanged" />
-                                <RadioButton x:Name="ManualRadio" Content="Manual"
-                                             GroupName="ManualMode" CheckedChanged="OnManualModeChanged" />
-                            </HorizontalStackLayout>
+                    <!-- Live status -->
+                    <Border Style="{StaticResource Card}">
+                        <VerticalStackLayout Spacing="14">
+                            <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
+                                <VerticalStackLayout>
+                                    <Label Text="AMBIENT LIGHT" Style="{StaticResource StatCaption}" />
+                                    <HorizontalStackLayout Spacing="4">
+                                        <Label x:Name="LuxValue" Text="—" Style="{StaticResource StatValue}" />
+                                        <Label x:Name="LuxUnit" Text="lx" Style="{StaticResource StatUnit}" />
+                                    </HorizontalStackLayout>
+                                </VerticalStackLayout>
+                                <VerticalStackLayout Grid.Column="1">
+                                    <Label Text="BRIGHTNESS" Style="{StaticResource StatCaption}" />
+                                    <Label x:Name="TargetValue" Text="—" Style="{StaticResource StatValue}" />
+                                    <ProgressBar x:Name="BrightnessBar" Progress="0" Margin="0,6,0,0"
+                                                 ProgressColor="{DynamicResource Accent}" />
+                                </VerticalStackLayout>
+                            </Grid>
 
-                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                                <Slider x:Name="ManualSlider" Grid.Column="0"
-                                        Minimum="0" Maximum="100"
-                                        ValueChanged="OnManualSliderChanged"
-                                        VerticalOptions="Center" />
-                                <Label x:Name="ManualValueLabel" Grid.Column="1" Text="50%"
-                                       WidthRequest="44" HorizontalTextAlignment="End"
-                                       FontAttributes="Bold" VerticalOptions="Center" />
+                            <!-- Badges -->
+                            <FlexLayout Wrap="Wrap" AlignItems="Center">
+                                <Border x:Name="SensorBadge" Style="{StaticResource Badge}" Margin="0,0,8,6">
+                                    <HorizontalStackLayout Spacing="6">
+                                        <Ellipse x:Name="SensorDot" WidthRequest="8" HeightRequest="8"
+                                                 Fill="{StaticResource OkColor}" VerticalOptions="Center" />
+                                        <Label x:Name="SensorText" Text="Sensor" FontSize="12" VerticalOptions="Center" />
+                                    </HorizontalStackLayout>
+                                </Border>
+                                <Border x:Name="ModeBadge" Style="{StaticResource Badge}" Margin="0,0,8,6">
+                                    <Label x:Name="ModeText" Text="Auto" FontSize="12" FontAttributes="Bold" />
+                                </Border>
+                                <Button x:Name="ReconnectButton" Text="Reconnect sensor"
+                                        Style="{StaticResource LinkButton}" Margin="0,0,0,6"
+                                        Clicked="OnReconnectClick" />
+                            </FlexLayout>
+
+                            <!-- Lux → brightness mapping -->
+                            <VerticalStackLayout Spacing="4">
+                                <Label Text="LIGHT → BRIGHTNESS" Style="{StaticResource StatCaption}" />
+                                <GraphicsView x:Name="Chart" HeightRequest="130" />
+                            </VerticalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <!-- Manual override -->
+                    <Border Style="{StaticResource Card}">
+                        <VerticalStackLayout Spacing="12">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <VerticalStackLayout VerticalOptions="Center">
+                                    <Label Text="Manual override" FontAttributes="Bold" />
+                                    <Label Text="Ignore the sensor and set brightness yourself"
+                                           FontSize="12" Style="{StaticResource SecondaryText}" />
+                                </VerticalStackLayout>
+                                <Switch x:Name="ManualSwitch" Grid.Column="1" VerticalOptions="Center"
+                                        Toggled="OnManualToggled" />
+                            </Grid>
+
+                            <VerticalStackLayout x:Name="ManualPanel" Spacing="12" IsVisible="False">
+                                <HorizontalStackLayout Spacing="20">
+                                    <RadioButton x:Name="ManualRadio" Content="Custom"
+                                                 GroupName="ManualMode" CheckedChanged="OnManualModeChanged" />
+                                    <RadioButton x:Name="MinRadio" Content="Minimum"
+                                                 GroupName="ManualMode" CheckedChanged="OnManualModeChanged" />
+                                    <RadioButton x:Name="MaxRadio" Content="Maximum"
+                                                 GroupName="ManualMode" CheckedChanged="OnManualModeChanged" />
+                                </HorizontalStackLayout>
+
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                    <Slider x:Name="ManualSlider" Minimum="0" Maximum="100"
+                                            ValueChanged="OnManualSliderChanged" VerticalOptions="Center" />
+                                    <Label x:Name="ManualValueLabel" Grid.Column="1" Text="50%"
+                                           WidthRequest="48" HorizontalTextAlignment="End"
+                                           FontSize="16" FontAttributes="Bold" VerticalOptions="Center" />
+                                </Grid>
+
+                                <HorizontalStackLayout Spacing="8">
+                                    <CheckBox x:Name="AbsoluteCheck" VerticalOptions="Center"
+                                              CheckedChanged="OnAbsoluteChanged" />
+                                    <Label Text="Use the full 0–100% range (ignore the configured limits)"
+                                           FontSize="13" VerticalOptions="Center" />
+                                </HorizontalStackLayout>
+                            </VerticalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <!-- Monitors -->
+                    <Border Style="{StaticResource Card}">
+                        <VerticalStackLayout Spacing="10">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <Label Text="Monitors" FontAttributes="Bold" VerticalOptions="Center" />
+                                <Button x:Name="RefreshButton" Grid.Column="1" Text="Refresh"
+                                        Style="{StaticResource LinkButton}" Clicked="OnRefreshClick" />
+                            </Grid>
+                            <Label x:Name="WorkerStatus" Text="Starting…" FontSize="12"
+                                   Style="{StaticResource SecondaryText}" />
+
+                            <VerticalStackLayout x:Name="MonitorList" Spacing="8">
+                                <BindableLayout.ItemTemplate>
+                                    <DataTemplate x:DataType="local:MonitorItem">
+                                        <Border Style="{StaticResource InsetRow}" Opacity="{Binding Opacity}">
+                                            <VerticalStackLayout Spacing="4">
+                                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                    <Label Text="{Binding Name}" FontAttributes="Bold"
+                                                           LineBreakMode="TailTruncation" />
+                                                    <Label Grid.Column="1" Text="{Binding PercentText}"
+                                                           FontAttributes="Bold" />
+                                                </Grid>
+                                                <ProgressBar Progress="{Binding Progress}"
+                                                             ProgressColor="{DynamicResource Accent}" />
+                                                <Label Text="{Binding Detail}" FontSize="11"
+                                                       Style="{StaticResource SecondaryText}" />
+                                                <Label Text="{Binding Action}" FontSize="11"
+                                                       TextColor="{Binding ActionColor}"
+                                                       IsVisible="{Binding HasAction}" />
+                                            </VerticalStackLayout>
+                                        </Border>
+                                    </DataTemplate>
+                                </BindableLayout.ItemTemplate>
+                            </VerticalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+                </VerticalStackLayout>
+
+                <!-- ============ Right: settings ============ -->
+                <VerticalStackLayout x:Name="RightColumn" Spacing="16">
+
+                    <!-- Light mapping -->
+                    <Border Style="{StaticResource Card}">
+                        <VerticalStackLayout Spacing="12">
+                            <VerticalStackLayout>
+                                <Label Text="Light mapping" FontAttributes="Bold" />
+                                <Label Text="Below min lux the screen sits at min brightness; above max lux, at max brightness."
+                                       FontSize="12" Style="{StaticResource SecondaryText}" />
+                            </VerticalStackLayout>
+                            <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="10">
+                                <controls:NumberField x:Name="MinLuxField" Caption="Min lux" Unit="lx"
+                                                      Hint="Dark room" Committed="OnSettingCommitted" />
+                                <controls:NumberField x:Name="MaxLuxField" Grid.Column="1" Caption="Max lux" Unit="lx"
+                                                      Hint="Bright room" Committed="OnSettingCommitted" />
+                                <controls:NumberField x:Name="MinBrightnessField" Grid.Row="1" Caption="Min brightness"
+                                                      Unit="%" Hint="0–100" Committed="OnSettingCommitted" />
+                                <controls:NumberField x:Name="MaxBrightnessField" Grid.Row="1" Grid.Column="1"
+                                                      Caption="Max brightness" Unit="%" Hint="0–100"
+                                                      Committed="OnSettingCommitted" />
                             </Grid>
                         </VerticalStackLayout>
-                    </VerticalStackLayout>
-                </Border>
-            </VerticalStackLayout>
+                    </Border>
 
-            <!-- Settings -->
-            <VerticalStackLayout Spacing="6">
-                <Label Text="SETTINGS" Style="{StaticResource SectionHeader}" />
-                <Border Style="{StaticResource Card}">
-                    <VerticalStackLayout Spacing="14">
-                        <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto"
-                              ColumnSpacing="12" RowSpacing="14">
+                    <!-- Advanced (collapsible) -->
+                    <Border Style="{StaticResource Card}">
+                        <VerticalStackLayout Spacing="12">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <Grid.GestureRecognizers>
+                                    <TapGestureRecognizer Tapped="OnAdvancedToggle" />
+                                </Grid.GestureRecognizers>
+                                <VerticalStackLayout VerticalOptions="Center">
+                                    <Label Text="Advanced" FontAttributes="Bold" />
+                                    <Label Text="Update rate, smoothing and hysteresis"
+                                           FontSize="12" Style="{StaticResource SecondaryText}" />
+                                </VerticalStackLayout>
+                                <Label x:Name="AdvancedChevron" Grid.Column="1" Text="&#xE76C;" FontSize="14"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       VerticalOptions="Center" Style="{StaticResource SecondaryText}" />
+                            </Grid>
 
-                            <VerticalStackLayout Grid.Row="0" Grid.Column="0">
-                                <Label Text="Min lux" Style="{StaticResource FieldCaption}" />
-                                <Entry x:Name="MinLuxBox" Keyboard="Numeric"
-                                       Completed="OnSettingCompleted" Unfocused="OnSettingCommitted" />
-                            </VerticalStackLayout>
-                            <VerticalStackLayout Grid.Row="0" Grid.Column="1">
-                                <Label Text="Max lux" Style="{StaticResource FieldCaption}" />
-                                <Entry x:Name="MaxLuxBox" Keyboard="Numeric"
-                                       Completed="OnSettingCompleted" Unfocused="OnSettingCommitted" />
-                            </VerticalStackLayout>
+                            <Grid x:Name="AdvancedPanel" IsVisible="False"
+                                  ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="10">
+                                <controls:NumberField x:Name="IntervalField" Caption="Update every" Unit="s"
+                                                      Hint="How often to read the sensor" Committed="OnSettingCommitted" />
+                                <controls:NumberField x:Name="MaxRateField" Grid.Column="1" Caption="Max change rate"
+                                                      Unit="%/s" Hint="0 = change instantly" Committed="OnSettingCommitted" />
+                                <controls:NumberField x:Name="HysteresisField" Grid.Row="1" Caption="Lux hysteresis"
+                                                      Unit="lx" Hint="Ignore changes smaller than this"
+                                                      Committed="OnSettingCommitted" />
+                            </Grid>
+                        </VerticalStackLayout>
+                    </Border>
 
-                            <VerticalStackLayout Grid.Row="1" Grid.Column="0">
-                                <Label Text="Min brightness (%)" Style="{StaticResource FieldCaption}" />
-                                <Entry x:Name="MinBrightnessBox" Keyboard="Numeric"
-                                       Completed="OnSettingCompleted" Unfocused="OnSettingCommitted" />
-                            </VerticalStackLayout>
-                            <VerticalStackLayout Grid.Row="1" Grid.Column="1">
-                                <Label Text="Max brightness (%)" Style="{StaticResource FieldCaption}" />
-                                <Entry x:Name="MaxBrightnessBox" Keyboard="Numeric"
-                                       Completed="OnSettingCompleted" Unfocused="OnSettingCommitted" />
-                            </VerticalStackLayout>
+                    <!-- Window behaviour -->
+                    <Border Style="{StaticResource Card}">
+                        <VerticalStackLayout Spacing="4">
+                            <Label Text="Window" FontAttributes="Bold" Margin="0,0,0,4" />
+                            <HorizontalStackLayout Spacing="8">
+                                <CheckBox x:Name="TrayCheck" VerticalOptions="Center"
+                                          CheckedChanged="OnSettingCommitted" />
+                                <Label Text="Minimize to tray on close" VerticalOptions="Center" />
+                            </HorizontalStackLayout>
+                            <HorizontalStackLayout Spacing="8">
+                                <CheckBox x:Name="RunAtStartupCheck" VerticalOptions="Center"
+                                          CheckedChanged="OnSettingCommitted" />
+                                <Label Text="Run at Windows startup" VerticalOptions="Center" />
+                            </HorizontalStackLayout>
+                            <HorizontalStackLayout Spacing="8">
+                                <CheckBox x:Name="StartMinimizedCheck" VerticalOptions="Center"
+                                          CheckedChanged="OnSettingCommitted" />
+                                <Label Text="Start minimized to tray" VerticalOptions="Center" />
+                            </HorizontalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
 
-                            <VerticalStackLayout Grid.Row="2" Grid.Column="0">
-                                <Label Text="Update rate (s)" Style="{StaticResource FieldCaption}" />
-                                <Entry x:Name="IntervalBox" Keyboard="Numeric"
-                                       Completed="OnSettingCompleted" Unfocused="OnSettingCommitted" />
-                            </VerticalStackLayout>
-                            <VerticalStackLayout Grid.Row="2" Grid.Column="1">
-                                <Label Text="Max change rate (%/s)" Style="{StaticResource FieldCaption}" />
-                                <Entry x:Name="MaxRateBox" Keyboard="Numeric"
-                                       Completed="OnSettingCompleted" Unfocused="OnSettingCommitted" />
-                            </VerticalStackLayout>
-
-                            <VerticalStackLayout Grid.Row="3" Grid.Column="0">
-                                <Label Text="Lux hysteresis" Style="{StaticResource FieldCaption}" />
-                                <Entry x:Name="HysteresisBox" Keyboard="Numeric"
-                                       Completed="OnSettingCompleted" Unfocused="OnSettingCommitted" />
-                            </VerticalStackLayout>
-                        </Grid>
-
-                        <BoxView HeightRequest="1" Color="{AppThemeBinding Light={StaticResource CardStrokeLight}, Dark={StaticResource CardStrokeDark}}" />
-
-                        <HorizontalStackLayout Spacing="8">
-                            <CheckBox x:Name="TrayCheck" VerticalOptions="Center"
-                                      CheckedChanged="OnSettingCommitted" />
-                            <Label Text="Minimize to tray on close" VerticalOptions="Center" />
-                        </HorizontalStackLayout>
-
-                        <HorizontalStackLayout Spacing="8">
-                            <CheckBox x:Name="RunAtStartupCheck" VerticalOptions="Center"
-                                      CheckedChanged="OnSettingCommitted" />
-                            <Label Text="Run at Windows startup" VerticalOptions="Center" />
-                        </HorizontalStackLayout>
-
-                        <HorizontalStackLayout Spacing="8">
-                            <CheckBox x:Name="StartMinimizedCheck" VerticalOptions="Center"
-                                      CheckedChanged="OnSettingCommitted" />
-                            <Label Text="Start minimized to tray" VerticalOptions="Center" />
-                        </HorizontalStackLayout>
-
-                        <Label x:Name="SettingsStatus" Text="" IsVisible="False"
-                               Style="{StaticResource SecondaryText}" />
-                    </VerticalStackLayout>
-                </Border>
-            </VerticalStackLayout>
-
-            <!-- Monitors -->
-            <VerticalStackLayout Spacing="6">
-                <Label Text="MONITORS" Style="{StaticResource SectionHeader}" />
-                <Border Style="{StaticResource Card}">
-                    <VerticalStackLayout Spacing="10">
-                        <Label x:Name="WorkerStatus" Text="Starting…"
-                               Style="{StaticResource SecondaryText}" />
-
-                        <Border Padding="0"
-                                BackgroundColor="{AppThemeBinding Light={StaticResource ListBgLight}, Dark={StaticResource ListBgDark}}"
-                                Stroke="{AppThemeBinding Light={StaticResource CardStrokeLight}, Dark={StaticResource CardStrokeDark}}"
-                                StrokeThickness="1">
-                            <Border.StrokeShape>
-                                <RoundRectangle CornerRadius="6" />
-                            </Border.StrokeShape>
-                            <CollectionView x:Name="MonitorList" HeightRequest="180">
-                                <CollectionView.ItemTemplate>
-                                    <DataTemplate>
-                                        <Label Text="{Binding .}" FontFamily="Consolas" FontSize="13"
-                                               Padding="10,2" LineBreakMode="TailTruncation" />
-                                    </DataTemplate>
-                                </CollectionView.ItemTemplate>
-                            </CollectionView>
-                        </Border>
-
-                        <HorizontalStackLayout Spacing="8">
-                            <Button x:Name="RefreshButton" Text="Refresh monitors" Clicked="OnRefreshClick" />
-                            <Button x:Name="ReconnectButton" Text="Reconnect sensor" Clicked="OnReconnectClick"
-                                    BackgroundColor="Transparent"
-                                    TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}"
-                                    BorderColor="{AppThemeBinding Light={StaticResource CardStrokeLight}, Dark={StaticResource CardStrokeDark}}"
-                                    BorderWidth="1" />
-                            <Button x:Name="HideButton" Text="Hide to tray" Clicked="OnHideClick"
-                                    BackgroundColor="Transparent"
-                                    TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}"
-                                    BorderColor="{AppThemeBinding Light={StaticResource CardStrokeLight}, Dark={StaticResource CardStrokeDark}}"
-                                    BorderWidth="1" />
-                        </HorizontalStackLayout>
-                    </VerticalStackLayout>
-                </Border>
-            </VerticalStackLayout>
-
+                    <Label x:Name="SettingsStatus" Text="" IsVisible="False" FontSize="12" Margin="4,0,0,0"
+                           Style="{StaticResource SecondaryText}" />
+                </VerticalStackLayout>
+            </Grid>
         </VerticalStackLayout>
     </ScrollView>
 </ContentPage>
