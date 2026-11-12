@@ -27,9 +27,10 @@ public class ConfigDataTests
         Assert.Equal(90, normalized.MinBrightness);
         Assert.Equal(91, normalized.MaxBrightness);
 
+        // No room above 100, so min is lowered instead of leaving min == max.
         config = new ConfigData { MinBrightness = 100, MaxBrightness = 50 };
         normalized = config.Normalized();
-        Assert.Equal(100, normalized.MinBrightness);
+        Assert.Equal(99, normalized.MinBrightness);
         Assert.Equal(100, normalized.MaxBrightness);
     }
 
@@ -48,11 +49,61 @@ public class ConfigDataTests
     public void MinBrightness_OutOfDomain_StillCorrectsMaxRelationally()
     {
         // MinBrightness clamps to 100 first, which then still exceeds MaxBrightness,
-        // so the relational correction must run on the clamped value, not the raw one.
+        // so the relational correction must run on the clamped value, not the raw one,
+        // and must still leave a non-empty range.
         var config = new ConfigData { MinBrightness = 500, MaxBrightness = 50 };
         var normalized = config.Normalized();
-        Assert.Equal(100, normalized.MinBrightness);
+        Assert.Equal(99, normalized.MinBrightness);
         Assert.Equal(100, normalized.MaxBrightness);
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void NonFiniteDoubles_FallBackToSafeValues(double bad)
+    {
+        var config = new ConfigData
+        {
+            MinLux = bad,
+            MaxLux = bad,
+            Interval = bad,
+            MaxBrightnessRate = bad,
+            LuxHysteresis = bad,
+        };
+        var normalized = config.Normalized();
+        Assert.Equal(50.0, normalized.MinLux);
+        Assert.Equal(300.0, normalized.MaxLux);
+        Assert.Equal(1.0, normalized.Interval);
+        Assert.Equal(0.0, normalized.MaxBrightnessRate);
+        Assert.Equal(0.0, normalized.LuxHysteresis);
+    }
+
+    [Fact]
+    public void HugeMinLux_StillYieldsMinLessThanMax()
+    {
+        // At 1e308, MinLux + 1.0 == MinLux in double precision; clamping into
+        // the lux domain first keeps the +1 correction meaningful.
+        var normalized = new ConfigData { MinLux = 1e308, MaxLux = 5 }.Normalized();
+        Assert.Equal(ConfigData.MaxLuxLimit, normalized.MinLux);
+        Assert.True(normalized.MinLux < normalized.MaxLux);
+    }
+
+    [Fact]
+    public void NegativeLux_ClampsToZero()
+    {
+        var normalized = new ConfigData { MinLux = -10, MaxLux = 300 }.Normalized();
+        Assert.Equal(0.0, normalized.MinLux);
+        Assert.Equal(300.0, normalized.MaxLux);
+    }
+
+    [Fact]
+    public void HugeInterval_ClampsToUpperBound()
+    {
+        // TimeSpan.FromSeconds overflows on huge values; the worker sleeps on this.
+        var normalized = new ConfigData { Interval = 1e300 }.Normalized();
+        Assert.Equal(ConfigData.MaxIntervalSeconds, normalized.Interval);
+        _ = TimeSpan.FromSeconds(normalized.Interval);
     }
 
     [Fact]

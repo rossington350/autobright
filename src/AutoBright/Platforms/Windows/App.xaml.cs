@@ -16,6 +16,13 @@ public partial class App : MauiWinUIApplication
     /// </summary>
     public App()
     {
+        // Run before any MAUI/WinUI setup so a duplicate launch exits cleanly.
+        // It has already asked the running instance to show its window.
+        if (!AutoBright.SingleInstance.TryClaim())
+        {
+            Environment.Exit(0);
+        }
+
         this.InitializeComponent();
     }
 

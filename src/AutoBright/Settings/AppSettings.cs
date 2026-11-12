@@ -84,16 +84,39 @@ public sealed class AppSettings
 
     /// <summary>
     /// Save settings. Throws on failure so callers can surface the error. Writes
-    /// to a temp file first and renames it over the real path so a crash or
-    /// power loss mid-write can never leave a truncated/corrupt settings.json.
+    /// to a temp file, flushes it to disk, and only then renames it over the
+    /// real path. The flush matters: without it, NTFS can commit the rename
+    /// before the file data, and a power cut would leave an empty settings.json.
+    /// On failure the temp file is removed and the existing settings.json is
+    /// left untouched.
     /// </summary>
-    public void Save()
+    public void Save() => SaveTo(GetSettingsPath());
+
+    internal void SaveTo(string path)
     {
-        string path = GetSettingsPath();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        string json = JsonSerializer.Serialize(this, Options);
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(this, Options);
         string tempPath = path + ".tmp";
-        File.WriteAllText(tempPath, json);
-        File.Move(tempPath, path, overwrite: true);
+        try
+        {
+            using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(json);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                File.Delete(tempPath);
+            }
+            catch
+            {
+                // Best effort; a stale .tmp is harmless and overwritten next save.
+            }
+            throw;
+        }
     }
 }

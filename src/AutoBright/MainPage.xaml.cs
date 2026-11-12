@@ -91,6 +91,15 @@ public partial class MainPage : ContentPage
         _uiTimer.Tick += (_, _) => RefreshUi();
         _uiTimer.Start();
 
+        // A second launch of the app asks this instance to show itself.
+        SingleInstance.ListenForShowRequests(() => Dispatcher.Dispatch(() =>
+        {
+            if (!_shuttingDown)
+            {
+                RestoreFromTray();
+            }
+        }));
+
         // Keep the Windows "run at startup" entry in sync with the saved setting
         // and the current executable path (handles a moved/reinstalled exe).
         StartupManager.Apply(_controller.Config.RunAtStartup, _controller.Config.StartMinimized);
@@ -254,8 +263,10 @@ public partial class MainPage : ContentPage
 
         _controller.ApplyConfig(updated);
         StartupManager.Apply(updated.RunAtStartup, updated.StartMinimized);
-        SaveSettings();
-        SetSettingsStatus("Settings saved.", error: false);
+        if (SaveSettings())
+        {
+            SetSettingsStatus("Settings saved.", error: false);
+        }
 
         // A min/max brightness edit changes the configured slider range.
         UpdateManualSliderRange();
@@ -287,7 +298,9 @@ public partial class MainPage : ContentPage
             minLux >= maxLux ? "Minimum lux must be lower than maximum lux."
             : !(minBrightness is >= 0 and <= 100 && maxBrightness is >= 0 and <= 100) ? "Brightness values must be between 0 and 100."
             : minBrightness >= maxBrightness ? "Minimum brightness must be lower than maximum brightness."
+            : !(minLux >= 0 && maxLux <= ConfigData.MaxLuxLimit) ? $"Lux values must be between 0 and {ConfigData.MaxLuxLimit:N0}."
             : interval <= 0 ? "Update rate must be greater than zero."
+            : interval > ConfigData.MaxIntervalSeconds ? $"Update rate cannot exceed {ConfigData.MaxIntervalSeconds:N0} seconds."
             : maxRate < 0 ? "Max change rate cannot be negative (use 0 to disable smoothing)."
             : hysteresis < 0 ? "Lux hysteresis cannot be negative (use 0 to disable it)."
             : null;
@@ -483,6 +496,10 @@ public partial class MainPage : ContentPage
             _tray = null;
         }
         _appWindow?.Show();
+        if (_appWindow?.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
+        {
+            presenter.Restore();
+        }
         _nativeWindow?.Activate();
     }
 
@@ -555,7 +572,11 @@ public partial class MainPage : ContentPage
 
     // ---- Settings persistence --------------------------------------------
 
-    private void SaveSettings()
+    /// <summary>
+    /// Persist the current config and window geometry. Returns false (and shows
+    /// the error in the settings status line) if the write failed.
+    /// </summary>
+    private bool SaveSettings()
     {
         ConfigData cfg = _controller.Config;
 
@@ -598,10 +619,13 @@ public partial class MainPage : ContentPage
         try
         {
             toSave.Save();
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
-            // Saving is best-effort; the next UI refresh will surface worker state.
+            // Settings stay applied in memory; tell the user they weren't persisted.
+            SetSettingsStatus($"Couldn't save settings: {ex.Message}", error: true);
+            return false;
         }
     }
 
@@ -676,8 +700,12 @@ public partial class MainPage : ContentPage
 
     // ---- Helpers ----------------------------------------------------------
 
+    // NumberStyles.Float accepts "NaN" and "Infinity", and comparisons with
+    // NaN are always false, so it would get past every range check. Reject
+    // non-finite values here, at parse time.
     private static bool TryParseField(string? text, out double value)
-        => double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        => double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+           && double.IsFinite(value);
 
     private static bool TryParseInt(string? text, out int value)
         => int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);

@@ -1,3 +1,5 @@
+using System;
+
 namespace AutoBright.Controller;
 
 /// <summary>
@@ -52,63 +54,75 @@ public sealed record ConfigData
     public bool ManualAbsolute { get; init; }
 
     /// <summary>
+    /// Upper bound for lux thresholds. Direct sunlight is ~100k lux, so this is
+    /// far above anything meaningful, while keeping <c>MinLux + 1</c> exactly
+    /// representable (no precision collapse at huge magnitudes).
+    /// </summary>
+    internal const double MaxLuxLimit = 1_000_000.0;
+
+    /// <summary>
+    /// Upper bound for the update interval (seconds). Also keeps
+    /// <c>TimeSpan.FromSeconds(Interval)</c> well clear of overflow.
+    /// </summary>
+    internal const double MaxIntervalSeconds = 3600.0;
+
+    /// <summary>
     /// Apply the same auto-correction the original used when values arrive from
-    /// the CLI or a settings file at startup.
+    /// the CLI or a settings file at startup. Afterwards every value is finite
+    /// (no NaN/Infinity), lux thresholds lie in [0, <see cref="MaxLuxLimit"/>]
+    /// with MinLux &lt; MaxLux, brightness limits lie in 0-100 with
+    /// MinBrightness &lt; MaxBrightness, and Interval lies in
+    /// (0, <see cref="MaxIntervalSeconds"/>].
     /// </summary>
     public ConfigData Normalized()
     {
-        double maxLux = MaxLux;
-        double interval = Interval;
-        double rate = MaxBrightnessRate;
-        double hysteresis = LuxHysteresis;
-
-        if (MinLux >= maxLux)
+        // Non-finite values fall back to defaults. Every guard below is written
+        // so NaN fails it: comparisons with NaN are always false.
+        double minLux = double.IsFinite(MinLux) ? Math.Clamp(MinLux, 0.0, MaxLuxLimit) : 50.0;
+        double maxLux = double.IsFinite(MaxLux) ? Math.Clamp(MaxLux, 0.0, MaxLuxLimit) : 300.0;
+        if (minLux >= maxLux)
         {
-            maxLux = MinLux + 1.0;
+            maxLux = minLux + 1.0;
         }
 
         // Enforce the documented 0-100 domain (not just the min<max relationship)
         // so a hand-edited or corrupted settings file can't carry an out-of-range
-        // brightness value past this point.
-        int minBrightness = System.Math.Max(0, System.Math.Min(100, MinBrightness));
-        int maxBrightness = System.Math.Max(0, System.Math.Min(100, MaxBrightness));
+        // brightness value past this point. When min is already 100 there is no
+        // room above it, so lower min instead of leaving min == max.
+        int minBrightness = Math.Clamp(MinBrightness, 0, 100);
+        int maxBrightness = Math.Clamp(MaxBrightness, 0, 100);
         if (minBrightness >= maxBrightness)
         {
-            maxBrightness = System.Math.Min(100, minBrightness + 1);
-        }
-        if (interval <= 0)
-        {
-            interval = 1.0;
-        }
-        if (rate < 0)
-        {
-            rate = 0.0;
-        }
-        if (hysteresis < 0)
-        {
-            hysteresis = 0.0;
+            if (minBrightness >= 100)
+            {
+                minBrightness = 99;
+                maxBrightness = 100;
+            }
+            else
+            {
+                maxBrightness = minBrightness + 1;
+            }
         }
 
-        int manualBrightness = System.Math.Max(0, System.Math.Min(100, ManualBrightness));
+        double interval = Interval > 0 && double.IsFinite(Interval)
+            ? Math.Min(Interval, MaxIntervalSeconds)
+            : 1.0;
 
-        return new ConfigData
+        // For both of these, 0 means "disabled". Negative and non-finite values
+        // are meaningless, so they map to 0 too.
+        double rate = MaxBrightnessRate >= 0 && double.IsFinite(MaxBrightnessRate) ? MaxBrightnessRate : 0.0;
+        double hysteresis = LuxHysteresis >= 0 && double.IsFinite(LuxHysteresis) ? LuxHysteresis : 0.0;
+
+        return this with
         {
-            MinLux = MinLux,
+            MinLux = minLux,
             MaxLux = maxLux,
             MinBrightness = minBrightness,
             MaxBrightness = maxBrightness,
             Interval = interval,
             MaxBrightnessRate = rate,
             LuxHysteresis = hysteresis,
-            ShowLux = ShowLux,
-            MinimizeToTray = MinimizeToTray,
-            StartMinimized = StartMinimized,
-            RunAtStartup = RunAtStartup,
-            RemoteHub = RemoteHub,
-            ManualControl = ManualControl,
-            ManualMode = ManualMode,
-            ManualBrightness = manualBrightness,
-            ManualAbsolute = ManualAbsolute,
+            ManualBrightness = Math.Clamp(ManualBrightness, 0, 100),
         };
     }
 }

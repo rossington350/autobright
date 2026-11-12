@@ -23,6 +23,16 @@ public class BrightnessStatefulTests
     }
 
     [Fact]
+    public void ApplyLuxHysteresis_NaNReading_KeepsPreviousValue()
+    {
+        var controller = NewController();
+        var cfg = ConfigFactory.Make(luxHysteresis: 10);
+        controller.ApplyLuxHysteresis(cfg, 100.0);
+        Assert.Equal(100.0, controller.ApplyLuxHysteresis(cfg, double.NaN));
+        Assert.Equal(150.0, controller.ApplyLuxHysteresis(cfg, 150.0));
+    }
+
+    [Fact]
     public void ApplyLuxHysteresis_SmallChange_IsIgnored()
     {
         var controller = NewController();

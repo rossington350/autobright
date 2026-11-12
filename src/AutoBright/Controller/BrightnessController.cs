@@ -94,7 +94,20 @@ public sealed class BrightnessController
         }
     }
 
-    public void DestroyMonitors() => _monitorManager.DestroyMonitors();
+    /// <summary>
+    /// Release the physical-monitor handles. Only safe once the worker has
+    /// exited: <see cref="Stop"/> waits at most 2 s, and a slow DDC/CI call can
+    /// outlast that. If the worker is still running, skip the cleanup instead of
+    /// racing it over the same handles; the OS reclaims them at process exit.
+    /// </summary>
+    public void DestroyMonitors()
+    {
+        if (_worker is { IsAlive: true })
+        {
+            return;
+        }
+        _monitorManager.DestroyMonitors();
+    }
 
     public AppState GetSnapshot()
     {
@@ -140,7 +153,7 @@ public sealed class BrightnessController
 
     internal static int? ComputeBrightness(ConfigData cfg, double? luxValue)
     {
-        if (luxValue is not double lux)
+        if (luxValue is not double lux || double.IsNaN(lux))
         {
             return null;
         }
@@ -154,10 +167,11 @@ public sealed class BrightnessController
         }
         double spanLux = cfg.MaxLux - cfg.MinLux;
         double spanBrightness = cfg.MaxBrightness - cfg.MinBrightness;
-        if (spanLux <= 0)
+        if (!(spanLux > 0) || !double.IsFinite(spanLux))
         {
-            // Defense-in-depth only: unreachable via ApplyConfig/the constructor,
-            // since Normalized() always guarantees MinLux < MaxLux first.
+            // Normalized() guarantees finite MinLux < MaxLux, but this helper can
+            // also be called with a raw config (e.g. from tests). Written as
+            // !(x > 0) so a NaN span is caught as well.
             return cfg.MinBrightness;
         }
         double result = cfg.MinBrightness + (lux - cfg.MinLux) * spanBrightness / spanLux;
@@ -167,8 +181,10 @@ public sealed class BrightnessController
 
     internal double? ApplyLuxHysteresis(ConfigData cfg, double? luxValue)
     {
-        if (luxValue is not double lux)
+        if (luxValue is not double lux || double.IsNaN(lux))
         {
+            // Treat a NaN reading as "no reading" so it can't poison the
+            // retained effective value (every later comparison would fail).
             return _effectiveLux;
         }
         if (_effectiveLux is not double effective || cfg.LuxHysteresis <= 0)
@@ -239,8 +255,7 @@ public sealed class BrightnessController
         while (_running)
         {
             var updates = new AppState();
-            bool hasMonitorList = false;
-            bool hasMonitorStatus = false;
+            bool hasMonitorInfo = false;
             bool hasTarget = false;
             bool hasCurrentLux = false;
             bool hasLastError = false;
@@ -262,14 +277,9 @@ public sealed class BrightnessController
                     : ComputeBrightness(cfg, effectiveLux);
                 IReadOnlyList<MonitorInfo> monitors = _monitorManager.EnumerateMonitors(forceRefresh);
 
-                if (monitors.Count == 0)
-                {
-                    HandleNoMonitors(rawTarget, updates, out hasMonitorList, out hasMonitorStatus);
-                }
-                else
-                {
-                    HandleMonitorsFound(cfg, monitors, rawTarget, updates, out hasMonitorList, out hasMonitorStatus);
-                }
+                hasMonitorInfo = monitors.Count == 0
+                    ? HandleNoMonitors(rawTarget, updates)
+                    : HandleMonitorsFound(cfg, monitors, rawTarget, updates);
                 hasTarget = true;
 
                 updates.CurrentLux = lux;
@@ -301,12 +311,9 @@ public sealed class BrightnessController
                 {
                     _state.LastError = updates.LastError;
                 }
-                if (hasMonitorStatus)
+                if (hasMonitorInfo)
                 {
                     _state.MonitorStatus = updates.MonitorStatus;
-                }
-                if (hasMonitorList)
-                {
                     _state.MonitorList = updates.MonitorList;
                 }
             }
@@ -319,9 +326,10 @@ public sealed class BrightnessController
     /// No monitors responded this cycle. Shows the last-known monitor list while
     /// within the retain grace period, otherwise reports the loss. Smoothing
     /// state is deliberately left untouched so ramping resumes from the last
-    /// applied value once monitors return.
+    /// applied value once monitors return. Always publishes monitor info, so it
+    /// always returns true (the return value matches HandleMonitorsFound).
     /// </summary>
-    private void HandleNoMonitors(int? rawTarget, AppState updates, out bool hasMonitorList, out bool hasMonitorStatus)
+    private bool HandleNoMonitors(int? rawTarget, AppState updates)
     {
         _monitorSuccessCount = 0;
         double now = _clock.Elapsed.TotalSeconds;
@@ -332,9 +340,7 @@ public sealed class BrightnessController
             var lines = new List<string>();
             foreach (var monitor in _lastGoodMonitors)
             {
-                string name = string.IsNullOrEmpty(monitor.Name) ? "Unnamed monitor" : monitor.Name;
-                int currentPct = MonitorValueToPercent(monitor, monitor.CurBrightness);
-                lines.Add($"{name}: last known current {currentPct}% (raw {monitor.CurBrightness}), hardware range {monitor.MinBrightness}-{monitor.MaxBrightness}");
+                lines.Add(FormatMonitorLine(monitor, "last known current"));
             }
             int timeoutLeft = Math.Max(0, (int)(RetainMonitorTimeout - (now - _lastGoodMonitorsTime)));
             updates.MonitorList = lines;
@@ -345,18 +351,17 @@ public sealed class BrightnessController
             updates.MonitorStatus = $"No compatible monitors found. Ensure your monitor supports Windows DDC/CI brightness control. Waiting for reconnect...{targetText}";
             updates.MonitorList = new List<string>();
         }
-        hasMonitorList = true;
-        hasMonitorStatus = true;
         updates.TargetBrightness = rawTarget;
+        return true;
     }
 
     /// <summary>
     /// At least one monitor responded this cycle: compute the applied target
     /// (bypassing smoothing under manual control), drive every monitor, and
     /// publish the monitor list once the success-streak stabilization
-    /// threshold is reached.
+    /// threshold is reached. Returns whether monitor info was published.
     /// </summary>
-    private void HandleMonitorsFound(ConfigData cfg, IReadOnlyList<MonitorInfo> monitors, int? rawTarget, AppState updates, out bool hasMonitorList, out bool hasMonitorStatus)
+    private bool HandleMonitorsFound(ConfigData cfg, IReadOnlyList<MonitorInfo> monitors, int? rawTarget, AppState updates)
     {
         _monitorSuccessCount++;
         _lastGoodMonitors = monitors;
@@ -384,9 +389,7 @@ public sealed class BrightnessController
         var lines = new List<string>();
         foreach (var monitor in monitors)
         {
-            string name = string.IsNullOrEmpty(monitor.Name) ? "Unnamed monitor" : monitor.Name;
-            int currentPct = MonitorValueToPercent(monitor, monitor.CurBrightness);
-            lines.Add($"{name}: current {currentPct}% (raw {monitor.CurBrightness}), hardware range {monitor.MinBrightness}-{monitor.MaxBrightness}");
+            lines.Add(FormatMonitorLine(monitor, "current"));
 
             if (appliedTarget is int applied)
             {
@@ -398,16 +401,21 @@ public sealed class BrightnessController
             }
         }
 
-        hasMonitorList = false;
-        hasMonitorStatus = false;
-        if (_monitorSuccessCount >= MonitorStableCycles)
-        {
-            updates.MonitorList = lines;
-            updates.MonitorStatus = "Monitors adjusted.";
-            hasMonitorList = true;
-            hasMonitorStatus = true;
-        }
         updates.TargetBrightness = appliedTarget;
+        if (_monitorSuccessCount < MonitorStableCycles)
+        {
+            return false;
+        }
+        updates.MonitorList = lines;
+        updates.MonitorStatus = "Monitors adjusted.";
+        return true;
+    }
+
+    private static string FormatMonitorLine(MonitorInfo monitor, string currentLabel)
+    {
+        string name = string.IsNullOrEmpty(monitor.Name) ? "Unnamed monitor" : monitor.Name;
+        int currentPct = MonitorValueToPercent(monitor, monitor.CurBrightness);
+        return $"{name}: {currentLabel} {currentPct}% (raw {monitor.CurBrightness}), hardware range {monitor.MinBrightness}-{monitor.MaxBrightness}";
     }
 
     /// <summary>Drop tracked "last sent" values for handles no longer present.</summary>

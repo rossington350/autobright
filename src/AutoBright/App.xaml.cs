@@ -1,29 +1,11 @@
-using System.Threading;
-
 namespace AutoBright;
 
 public partial class App : Application
 {
-    // A second instance would spin up its own worker thread driving the same
-    // monitors via DDC/CI and saving the same settings.json, so only one may
-    // run at a time. The mutex is held for the process lifetime; never
-    // disposed, so it's released automatically when the process exits.
-    private static readonly Mutex SingleInstanceMutex;
-    private static readonly bool IsFirstInstance;
-
-    static App()
-    {
-        SingleInstanceMutex = new Mutex(initiallyOwned: true, "Local\\AutoBright_SingleInstance", out bool createdNew);
-        IsFirstInstance = createdNew;
-    }
-
+    // Single-instance enforcement happens earlier, in the WinUI App constructor
+    // (Platforms/Windows/App.xaml.cs), before the MAUI host starts. See SingleInstance.
     public App()
     {
-        if (!IsFirstInstance)
-        {
-            Environment.Exit(0);
-        }
-
         InitializeComponent();
     }
 

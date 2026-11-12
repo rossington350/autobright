@@ -32,6 +32,22 @@ public class BrightnessMathTests
     }
 
     [Fact]
+    public void ComputeBrightness_NaNLux_ReturnsNull()
+    {
+        var cfg = ConfigFactory.Make();
+        Assert.Null(BrightnessController.ComputeBrightness(cfg, double.NaN));
+    }
+
+    [Fact]
+    public void ComputeBrightness_NonFiniteSpan_FallsBackToMin()
+    {
+        // A raw (un-normalized) config with an infinite MaxLux gives a NaN or
+        // infinite span; the guard must catch it instead of casting NaN to int.
+        var cfg = ConfigFactory.Make(minLux: double.NegativeInfinity, maxLux: double.PositiveInfinity, minBrightness: 20);
+        Assert.Equal(20, BrightnessController.ComputeBrightness(cfg, 100.0));
+    }
+
+    [Fact]
     public void ComputeBrightness_RoundsAwayFromZero()
     {
         // 0-10 lux -> 0-3 brightness; lux=5 -> raw 1.5, rounds away from zero to 2.
